@@ -1,0 +1,63 @@
+SUPER-OS  -  TI-83 Plus Silver Edition  -  paquete para instalar / install package
+=====================================================================================
+
+ARCHIVOS / FILES
+  SuperOS.8xu                 sistema operativo firmado (clave 04) para la calculadora real / signed OS upgrade for the real calculator
+  superos.rom                 imagen de 2 MB SOLO para el emulador (incluye un arranque falso); NO se instala en la calculadora
+                              2 MB image for the emulator ONLY (contains a stand-in boot stub); never install it
+  SuperOS_bringup.8xu         variante de puesta en marcha: barrido de contraste y barra de progreso del arranque (docs\INSTALL.md)
+                              bring-up variant: contrast sweep + boot progress bar (see docs\INSTALL.md)
+  esp32s3zero_firmware.bin    firmware del ESP32-S3-Zero (todavia no lo necesitas hoy) / ESP32-S3-Zero firmware (not needed today)
+
+ESTADO / STATUS  (leer / read this)
+  ALFA. El 26/10/2026 el .8xu se instalo y arranco en UNA TI-83 Plus SE real (boot code 1.00, OS 1.19); de esa unidad solo se
+  vio el arranque y la primera pantalla. Los arreglos posteriores (firma con la clave 04, LCD, teclado) NO se volvieron a probar
+  en la unidad. Otras revisiones de boot code: sin probar. Se verifica en la PC: la estructura del archivo, que las paginas de
+  fabrica $7D/$7E/$7F NO estan incluidas, y la firma RSA con la clave publica 04 (python tools\verify_8xu.py).
+  ALPHA. On 2026-10-26 the .8xu installed and booted on ONE real TI-83 Plus SE (boot code 1.00, OS 1.19); only the boot and the
+  first screen were seen. Later fixes (key 04 signature, LCD, keyboard) were NOT re-tested on the unit. Other boot code
+  revisions: untested. Checked on the PC: file structure, factory pages NOT included, RSA signature with public key 04.
+
+LA VUELTA ATRAS - LEER ANTES DE INSTALAR / THE WAY BACK - READ BEFORE INSTALLING
+  Super-OS NO puede recibir un sistema operativo por el cable (no implementa el protocolo de TI). Para volver al OS de TI,
+  o si algo sale mal (pantalla en blanco, cuelgue, basura, reinicios), siempre se usa el modo de recepcion del boot code:
+    1. Saca UNA pila AAA (deja la pila de respaldo chica en su lugar).
+    2. Mantene apretada la tecla DEL y volve a poner la pila; solta DEL despues de uno o dos segundos.
+    3. Tiene que aparecer "Waiting... Please install operating system now" (si la pantalla queda en blanco, apreta ON una vez).
+    4. Conecta el cable y manda el OS oficial de TI con TiLP ("Send file").
+  Es el procedimiento documentado para la familia TI-83 Plus; no fue probado en esta unidad. Si el paso 3 no aparece:
+  NO pruebes otras combinaciones ni herramientas, deja la calculadora apagada y anota lo que ves (docs\PRUEBA_HOY.md seccion 8).
+  Super-OS cannot receive an OS over the cable. To go back, or after any failure: remove ONE AAA battery, hold DEL while putting it
+  back, wait for "Waiting... Please install operating system now", then send the official TI OS with TiLP. Not tried on this unit.
+
+ANTES DE EMPEZAR / BEFORE YOU START
+  1. Haz backup de la calculadora (la instalacion borra la RAM) / back up the calculator (RAM is erased).
+  2. Descarga el OS oficial TI-83 Plus (el mismo archivo sirve para la Silver Edition) y guardalo: es tu forma de volver atras.
+     Download the official TI-83 Plus OS (same file for the Silver Edition) and keep it: it is your way back.
+  3. Pilas nuevas, cable de enlace (USB SilverLink o serie) y TiLP. TI Connect CE no fue probado con esta calculadora ni con un
+     OS que no es de TI: usa TiLP. / Fresh batteries, link cable, TiLP (TI Connect CE was not checked).
+  4. Practica el paso "DEL + pila" de arriba ANTES de instalar, con el OS de TI todavia puesto: si aparece el mensaje "Waiting...",
+     manda de nuevo el OS de TI y listo, ya sabes que la vuelta atras funciona en tu unidad.
+     Rehearse "DEL + battery" BEFORE installing, while the TI OS is still on it (then resend the TI OS): that proves your way back.
+
+INSTALAR CON TiLP / INSTALL WITH TiLP
+  1. Conecta el cable, calculadora encendida y en la pantalla principal / connect the cable, calculator ON at the home screen.
+  2. Abre TiLP, elige el cable y detecta la calculadora (modelo TI-83+) / open TiLP, pick the cable, detect the calculator (TI-83+).
+  3. Boton "Send file" -> elige SuperOS.8xu (TiLP lo reconoce como actualizacion de OS) / "Send file" -> choose SuperOS.8xu.
+  4. Espera la barra de progreso (1-2 min). NO desconectes ni saques las pilas / wait for the bar; do NOT unplug or remove batteries.
+  5. La calculadora reinicia y muestra la pantalla de inicio de Super-OS / the calculator restarts into the Super-OS home screen.
+     Si en ~10 s no aparece, o la transferencia es rechazada: "LA VUELTA ATRAS" arriba / if it does not: see "THE WAY BACK".
+
+RIESGOS CONOCIDOS / KNOWN RISKS (detalle: docs\REVIEW.md, "Hardware risks")
+  - Rechazo de la firma segun la revision del boot code / signature rejected by your boot code revision.
+  - Pagina $7C (rutina de desbloqueo de flash) dentro del OS: se asume que el boot code la acepta en una actualizacion.
+  - Geometria de flash/RAM y tiempos del LCD tomados de documentacion, no medidos en tu unidad.
+  - Datos archivados del OS de TI pueden quedar en la flash: Super-OS no toca las paginas $07-$1F; si OTA > INSTALADOS muestra
+    nombres raros, usa OTA > 3 BORRAR TODO una vez. / Old TI archive data may remain: use OTA > 3 ERASE ALL if INSTALLED lists junk.
+
+QUE FUNCIONA HOY SIN ESP32 / WHAT WORKS TODAY WITHOUT THE ESP32  (verificado en el emulador / verified in the emulator only)
+  Calculadora, graficador, tabla periodica, constantes, conversor, reloj, ajustes, bloqueo con PIN, notas, diagnosticos y
+  los juegos de la pestana JUEG (9 nativos + 6 CHIP-8). Las apps que necesitan el ESP32 muestran "SIN RESPUESTA ESP32" tras ~6 s; CLEAR cancela la espera.
+  Calculator, grapher, periodic table, constants, converter, clock, settings, PIN lock, notes, diagnostics and the games
+  (9 native + 6 CHIP-8). ESP32 apps show
+  "SIN RESPUESTA ESP32" after ~6 s; CLEAR cancels the wait.

@@ -1,5 +1,5 @@
 ; ---- home: status bar, tabs F1-F5, numbered launcher 1-9 -----------------------------------------------
-; item (5 bytes): .dw name STR id, .dw handler, .db milestone     terminator: .dw $FFFF
+; item (5 bytes): .dw name STR id, .dw handler, .db flags (bit 7 = closed in exam mode)     terminator: .dw $FFFF
 tab_tables: .dw tab0,tab1,tab2,tab3,tab4,tab5
 
 tab0:
@@ -422,7 +422,7 @@ home_open_go:
 home_open_ok:
     ld e,(ix+0)
     ld d,(ix+1)                 ; DE = name id
-    ld a,(ix+4)                 ; A = milestone (for app_pending)
+    ld a,(ix+4)                 ; A = item flags (bit 7: closed in exam mode)
     ld l,(ix+2)
     ld h,(ix+3)
     call home_call

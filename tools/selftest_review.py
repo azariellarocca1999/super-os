@@ -42,7 +42,7 @@ def run(check_fn=None):
     global check
     if check_fn:
         check = check_fn
-    print("== 25. Review pass 2: boot hand-off, CLEAR held while an app sends its exit request, leftover TI-OS archive data")
+    print("== 30. Review pass 2: boot hand-off, CLEAR held while an app sends its exit request, leftover TI-OS archive data")
     base = open(uidrive.rom, "rb").read()
 
     # 25a. The factory boot code hands control to the OS at $0053 (community documentation: KnightOS header, WikiTI), not only at $0000.

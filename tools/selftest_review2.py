@@ -37,7 +37,7 @@ def run(check_fn=None):
     global check
     if check_fn:
         check = check_fn
-    print("== 30. Review pass 3: the PIN screen must not disturb the app it interrupts")
+    print("== 31. Review pass 3: the PIN screen must not disturb the app it interrupts")
     ref, _ = note_session("rv3_note_ref", False)
     got, out = note_session("rv3_note_lock", True)
     check("LOCK: a note being edited when the calculator sleeps is saved into its own slot after the PIN (app scratch preserved)",

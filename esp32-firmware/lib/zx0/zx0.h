@@ -39,6 +39,12 @@ typedef struct block_t {
 
 BLOCK *allocate(int bits, int index, int offset, BLOCK *chain);
 
+/* Super-OS firmware changes (the reference is a one-shot command-line tool): an allocation failure calls zx0_oom(), which
+   returns to zx0_pack() (longjmp) instead of exit(); every table and block is released after each call. */
+void zx0_oom(void);
+void zx0_blocks_release(void);
+void optimize_release(void);
+
 void assign(BLOCK **ptr, BLOCK *chain);
 
 BLOCK *optimize(unsigned char *input_data, int input_size, int skip, int offset_limit);

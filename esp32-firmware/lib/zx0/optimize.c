@@ -41,12 +41,25 @@ int elias_gamma_bits(int value) {
     return bits;
 }
 
+/* Super-OS: the tables are file-scope so that optimize_release() can free them after a call or after an allocation failure */
+static BLOCK **last_literal = NULL;
+static BLOCK **last_match = NULL;
+static BLOCK **optimal = NULL;
+static int *match_length = NULL;
+static int *best_length = NULL;
+
+void optimize_release(void) {
+    free(last_literal);
+    free(last_match);
+    free(optimal);
+    free(match_length);
+    free(best_length);
+    last_literal = last_match = optimal = NULL;
+    match_length = best_length = NULL;
+}
+
 BLOCK* optimize(unsigned char *input_data, int input_size, int skip, int offset_limit) {
-    BLOCK **last_literal;
-    BLOCK **last_match;
-    BLOCK **optimal;
-    int* match_length;
-    int* best_length;
+    BLOCK *result;
     int best_length_size;
     int bits;
     int index;
@@ -62,17 +75,17 @@ BLOCK* optimize(unsigned char *input_data, int input_size, int skip, int offset_
     optimal = (BLOCK **)calloc(input_size, sizeof(BLOCK *));
     match_length = (int *)calloc(max_offset+1, sizeof(int));
     best_length = (int *)malloc(input_size*sizeof(int));
-    if (!last_literal || !last_match || !optimal || !match_length || !best_length) {
-        fprintf(stderr, "Error: Insufficient memory\n");
-        exit(1);
-    }
+    if (!last_literal || !last_match || !optimal || !match_length || !best_length)
+        zx0_oom();
     if (input_size > 2)
         best_length[2] = 2;
 
     /* start with fake block */
     assign(&last_match[INITIAL_OFFSET], allocate(-1, skip-1, INITIAL_OFFSET, NULL));
 
+#ifdef ZX0_PROGRESS
     printf("[");
+#endif
 
     /* process remaining bytes */
     for (index = skip; index < input_size; index++) {
@@ -125,14 +138,22 @@ BLOCK* optimize(unsigned char *input_data, int input_size, int skip, int offset_
         }
 
         /* indicate progress */
+#ifdef ZX0_PROGRESS
         if (index*MAX_SCALE/input_size > dots) {
             printf(".");
             fflush(stdout);
             dots++;
         }
+#else
+        (void)dots;
+#endif
     }
 
+#ifdef ZX0_PROGRESS
     printf("]\n");
+#endif
 
-    return optimal[input_size-1];
+    result = optimal[input_size-1];
+    optimize_release();    /* the result chain lives in the block pool, not in these tables */
+    return result;
 }

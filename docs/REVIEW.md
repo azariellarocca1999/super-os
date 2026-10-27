@@ -43,7 +43,7 @@ Possible race kept as is: if CLEAR is already held when `link_request` starts, t
 # Pass 2: supervision of pass 1 (Opus)
 
 Method: every claim of pass 1 re-run from scratch (`.\scripts\2_build_all.ps1 -Test`), the changed areas read line by line, and **mutation testing**
-(break the code on purpose, the test must fail) on both the new and the pass-1 tests. Every Z80 fix below has a test in section 25 of `selftest.py`
+(break the code on purpose, the test must fail) on both the new and the pass-1 tests. Every Z80 fix below has a test in section 30 of `selftest.py`
 (`tools/selftest_review.py`) that failed before the fix and passes after; the mutation that undoes the fix makes it fail again.
 Everything is still emulator / host only: **nothing here was run on the calculator or on the ESP32**.
 
@@ -120,7 +120,7 @@ Two whole-system checks were added because reading alone does not scale to this 
 * a **RAM map audit** (every `.equ` address resolved, overlaps listed and checked one by one: most are apps that never run together);
 * a **random-key fuzzer** on the emulator: 120 sessions x 90 s, ~19 000 random key taps through every tab, app and game (ON included),
   watching for resets, crash records, bad stack pointers and a frozen UI. Result: **0 sessions with problems** (before and after the fixes).
-Every fix has a check in section 30 of `selftest.py` (`tools/selftest_review2.py`) or a host test that failed before it; mutations that undo
+Every fix has a check in section 31 of `selftest.py` (`tools/selftest_review2.py`) or a host test that failed before it; mutations that undo
 each fix were run and are caught.
 
 ## Important
@@ -136,14 +136,17 @@ each fix were run and are caught.
 | P3-7 | **ESP32 crash on an empty reply.** The ZX0 optimizer returns `optimal[n - 1]` = `optimal[-1]` for 0 bytes. `store::list()` is `""` when the ESP32 has no packages (its factory state), so OTA > PC PACKAGES crashed the chip; the Python model raised as well, so the calculator just waited. | Host test `esp32-firmware/test_host/zx0_test.c` (the firmware's own packer): access violation on 0 bytes. Emulator: the list never came. | `zx0_pack` packs an empty input as one NUL (an empty text for the calculator); same rule in `bridge_pc/services.py`. Emulator check: an empty store answers `(SIN PAQUETES)`. **Firmware: compiled and host-tested, not run on a chip.** |
 | P3-8 | **Signature tooling dropped a byte 1 time in 256.** `fix_8xu_tail.py` and `verify_8xu.py` located the 67-byte signature field by stripping trailing `FF`; an RSA value that ends in `FF` lost its last byte (the build stopped, or the verifier computed on a truncated value). | Test: the release file with its last signature byte set to `FF` -> `SystemExit`. | Both take the field by its length byte (`02 0D 40` = 3 + 64). |
 
+| P3-9 | **The firmware's ZX0 packer leaked about 400 KB per reply and called `exit()` when memory ran out.** It is the reference command-line compressor: it never frees its tables nor its 240 KB block pool, and stops the program on an allocation failure. Every chat / Wikipedia / weather / list reply goes through it: the 2 MB PSRAM would be gone after a handful of replies, and `exit()` on the ESP32 is a reboot. | Host test with a counting allocator: 416 000 bytes left after one 3000-byte reply, 12.8 MB after 40; making an allocation fail ended the process. | `memory.c` keeps its chunks in a list (24 KB each instead of 240 KB) and frees them after every call; `optimize.c` frees its tables; allocation failures `longjmp` back to `zx0_pack`, which frees everything and returns NULL; the progress bar on stdout is compiled out. Output checked byte-identical to the reference `zx0.exe` on five files. **Compiled and host-tested, not run on a chip.** |
+
 ## Minor (fixed unless noted)
 * `make_release.ps1` ignored every verifier failure of `SuperOS_bringup.8xu`, signature included: it is now verified with `--rom none` (all checks except the byte compare with the normal dev ROM) and a failure stops the release.
 * `invaders.z80` and six Python files started with a UTF-8 BOM (in the `.z80`, spasm saw `EF BB BF` as a label before the comment): removed.
 * `sokoban.z80` centres a level on the width of its *first* row; `check_sokoban_levels.py` only checked the widest row against 16. The CI check now applies the same rule as the Z80 (no current level is affected).
 * `GL_HS` comment said 8 high scores; it is 10 slots (ids 0-8 used). `app_pending` and the "milestone" comment of the launcher table are dead code now that byte 4 is the exam-mode flag.
 * `dist/LEEME.txt` still said the `.8xu` had never been tried on a real calculator and listed neither the bring-up file nor the native games; `REVIEW.md` pass 1 said the same: updated to the state in `STATUS.md`.
-* Not changed: the ZX0 reference optimizer prints a progress bar on stdout (the ESP32's serial port) for every reply; harmless, a little slower.
-* Not changed: section numbers in `selftest.py` repeat (two "25", two "27"); cosmetic.
+* The self-test section numbers repeated (two "25"): the review sections are now 30 (pass 2) and 31 (pass 3).
+* Dead code removed: `app_pending` and its string (the launcher's item byte is the exam-mode flag now); `selftest_noesp` no longer exempts `OTA PC packages` from the "ends with a message" check (it passes without the exemption) and its unused `failed_shown` is gone.
+* `dist/LEEME.txt` is tracked in git now (`.gitignore` exception) and copied into `release\` by `make_release.ps1`.
 
 ## Checked and found correct
 Sokoban (push / undo / restart / bounds, stack balance in the push path), Reversi (8-direction walk with off-board wrap detection, flip-back counter, passes, game end, CPU table), notepad slot arithmetic and limits, `glib` (frame pacing, sleep inside a game forces a full redraw, LFSR seed, `gl_rnd_n` for n = 1, high scores now in the journalled settings), the settings journal with 64-byte records (old 16-byte journals are reclaimed by the blank-slot rule of pass 2), build-id lock reset, firmware link layer (CRC on oversize frames short-circuits, turbo timeouts, empty `send_raw`), `games.cpp` start / stop ownership, the Game Boy core's bounds-checked ROM reads, the delta-frame codec's worst case (781 B in an 800 B buffer).

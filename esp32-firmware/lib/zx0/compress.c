@@ -88,10 +88,8 @@ unsigned char *compress(BLOCK *optimal, unsigned char *input_data, int input_siz
     /* calculate and allocate output buffer */
     *output_size = (optimal->bits+25)/8;
     output_data = (unsigned char *)malloc(*output_size);
-    if (!output_data) {
-         fprintf(stderr, "Error: Insufficient memory\n");
-         exit(1);
-    }
+    if (!output_data)
+        zx0_oom();
 
     /* un-reverse optimal sequence */
     prev = NULL;

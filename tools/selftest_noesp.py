@@ -56,8 +56,7 @@ def run(check_fn=None):
         s.press("CLEAR")                              # editors: dismiss message, clear text, leave
         s.snap("c3", wait=500)
         s.run(extra_ms=300)
-        failed_shown = not same_region(tag, "wait", "late", 8, 64) or lit_rows(tag, "late", 8, 64) > 0
-        check("%s: with no ESP32 the request ends with a message (not hung)" % name, not same_region(tag, "wait", "late", 14, 50) or name in ("OTA PC packages",),
+        check("%s: with no ESP32 the request ends with a message (not hung)" % name, not same_region(tag, "wait", "late", 14, 50),
               "(lit wait=%d late=%d)" % (lit_rows(tag, "wait", 8, 64), lit_rows(tag, "late", 8, 64)))
         # back at the launcher = same picture as before (the highlighted item may differ: compare the lit pixel count with a tolerance)
         back = any(abs(lit_rows(tag, "home", 8, 64) - lit_rows(tag, c, 8, 64)) <= 60 for c in ("c1", "c2", "c3")) and \

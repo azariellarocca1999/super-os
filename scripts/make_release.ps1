@@ -21,5 +21,6 @@ if ($LASTEXITCODE) { throw "dist\SuperOS_bringup.8xu failed its checks (structur
 New-Item -ItemType Directory -Force release | Out-Null
 Copy-Item dist\SuperOS.8xu, dist\SuperOS_bringup.8xu, dist\esp32s3zero_firmware.bin release\ -Force
 Copy-Item docs\INSTALL.md release\INSTALL.md -Force
+Copy-Item dist\LEEME.txt release\LEEME.txt -Force
 Get-ChildItem release | ForEach-Object { "{0}  {1,9:N0} bytes  sha256 {2}" -f $_.Name, $_.Length, (Get-FileHash $_.FullName -Algorithm SHA256).Hash.Substring(0, 16) }
 Write-Host "release\ ready. Upload with: gh release create vX.Y.Z release\* --prerelease" -ForegroundColor Green

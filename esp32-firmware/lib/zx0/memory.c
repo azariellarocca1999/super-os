@@ -28,11 +28,28 @@
 
 #include "zx0.h"
 
-#define QTY_BLOCKS 10000
+#define QTY_BLOCKS 1000            /* Super-OS: 24 KB chunks (was 10000 = 240 KB), freed by zx0_blocks_release() */
 
+typedef struct chunk_t {
+    struct chunk_t *next;
+    BLOCK blocks[QTY_BLOCKS];
+} CHUNK;
+
+static CHUNK *chunks = NULL;
 BLOCK *ghost_root = NULL;
 BLOCK *dead_array = NULL;
 int dead_array_size = 0;
+
+void zx0_blocks_release(void) {
+    while (chunks) {
+        CHUNK *n = chunks->next;
+        free(chunks);
+        chunks = n;
+    }
+    ghost_root = NULL;
+    dead_array = NULL;
+    dead_array_size = 0;
+}
 
 BLOCK *allocate(int bits, int index, int offset, BLOCK *chain) {
     BLOCK *ptr;
@@ -46,11 +63,12 @@ BLOCK *allocate(int bits, int index, int offset, BLOCK *chain) {
         }
     } else {
         if (!dead_array_size) {
-            dead_array = (BLOCK *)malloc(QTY_BLOCKS*sizeof(BLOCK));
-            if (!dead_array) {
-                fprintf(stderr, "Error: Insufficient memory\n");
-                exit(1);
-            }
+            CHUNK *c = (CHUNK *)malloc(sizeof(CHUNK));
+            if (!c)
+                zx0_oom();
+            c->next = chunks;
+            chunks = c;
+            dead_array = c->blocks;
             dead_array_size = QTY_BLOCKS;
         }
         ptr = &dead_array[--dead_array_size];

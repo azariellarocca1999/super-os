@@ -13,6 +13,7 @@ __pycache__/
 # release artifacts go to GitHub Releases, not into git
 dist/*
 !dist/.gitkeep
+!dist/LEEME.txt
 
 # local agent state
 .claude/settings.local.json
