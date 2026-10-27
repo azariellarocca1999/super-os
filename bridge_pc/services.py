@@ -56,6 +56,8 @@ def log(*a):
 
 
 def zx0(data: bytes) -> bytes:
+    if not data:
+        data = b"\0"            # as the firmware's zx0_pack: an empty reply (e.g. an empty store list) goes out as one NUL = an empty text
     with tempfile.TemporaryDirectory() as d:
         src, dst = os.path.join(d, "i"), os.path.join(d, "o")
         open(src, "wb").write(data)
@@ -105,7 +107,7 @@ class _Upload(http.server.BaseHTTPRequestHandler):
         q = urllib.parse.parse_qs(u.query)
         name = (q.get("name") or [""])[0].upper()
         kind = (q.get("kind") or ["bin"])[0].lower()
-        limits = {"bin": 5200, "game": 3584, "ch8": 3584, "gb": 1_500_000}
+        limits = {"bin": 4715, "game": 3584, "ch8": 3584, "gb": 1_500_000}
         n = int(self.headers.get("Content-Length", 0))
         if u.path != "/upload" or not name.isalnum() and "_" not in name or len(name) > 8 or kind not in limits or n == 0 or n > limits[kind]:
             self.send_response(400)

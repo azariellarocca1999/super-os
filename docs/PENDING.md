@@ -15,7 +15,7 @@
 2. Statistics / lists / matrices app (one-variable stats, regression) and complex numbers; better `sin` / `cos` for |x| > ~3e4; more CAS coverage. All need a new flash page for the math code.
 3. SCHIP (128x64) for the CHIP-8 interpreter, pause and speed selection there; more native games (Connect 4, a small Pac-Man-like, Lunar Lander). Page 5 is 91 % full: the next game needs a second games page.
 4. Sound is impossible (no speaker), but a `beep` through the link-port line could drive a piezo on the ESP32 side.
-5. Notes that survive a battery change (a flash journal for them), longer notes, a viewer for text packages; RTC that keeps running in deep sleep; packages over 5200 bytes; rename packages from the UI; folders in the package store.
+5. Notes that survive a battery change (a flash journal for them), longer notes, a viewer for text packages; RTC that keeps running in deep sleep; packages over 4715 bytes; rename packages from the UI; folders in the package store.
 6. Adaptive turbo (drop speed after CRC errors) and calibration in DIAGNOSTICS; a protocol-level cancel so the ESP32 stops waiting for DeepSeek after CLEAR.
 7. ESP32 flash encryption (irreversible eFuses): decision pending; the current secret sealing is only chip-bound obfuscation.
 8. NES: **recommended to leave out** (Nofrendo is GPL, no redistributable test ROM).

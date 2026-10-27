@@ -1,4 +1,4 @@
-﻿"""Does gl_flush keep the LCD identical to the frame buffer?  Each native game is played for a few seconds, paused (the picture is then static) and the
+"""Does gl_flush keep the LCD identical to the frame buffer?  Each native game is played for a few seconds, paused (the picture is then static) and the
 emulator's LCD is compared with GBUF1 ($8000).  (While things move the emulator's get_lcd() lags about three frames behind the LCD memory, a
 persistence effect that is the same with full-screen blits, so only static pictures can be compared.)   python tools/check_flush.py"""
 import os

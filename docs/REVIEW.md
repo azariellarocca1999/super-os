@@ -4,7 +4,7 @@ Scope: Z80 OS, ESP32 firmware, the Python model of the ESP32 (`bridge_pc/`), the
 running the emulator; **nothing was run on real hardware**. Each fixed item has a test that failed or a reproduction before the fix.
 
 ## Critical
-None found that can be demonstrated in the emulator. The one open critical *risk* is outside the code base: the signed `.8xu` has never been accepted by a real calculator
+None found that can be demonstrated in the emulator. The one open critical *risk* was outside the code base: at the time of this pass the signed `.8xu` had never been accepted by a real calculator (later it was installed on one unit: see "Found on the real unit")
 (see "Hardware risks" below and `docs/HARDWARE_TEST.md`).
 
 ## Important (all fixed)
@@ -109,3 +109,44 @@ Reports from the TI-83+SE: "the keyboard does not work well", "Snake crashes aft
 * **Tooling**: `tools/check_labels.py` (spasm accepts a label and an `.equ` with the same name; the second one silently wins and a `JR Z` jumped into RAM: found while writing the native games), `tools/audit_text.py` (24-column limit on every UI string), `tools/z80dis.py` (disassembler and boot tracer), crash trail (the ISR records the PC and SP every tick; after an unexpected restart the next boot prints them: `REINICIO PC=.... SP=....`), DIAGNOSTICS 7 TIMING (tick rate against the crystal RTC, CPU speed), `hz80_sim`'s `softreset` event.
 * **Native games**: seven games on a shared library (`glib.z80`: frame pacing, matrix scan, LFSR, rectangles, sprites, numbers, overlays, high scores, **tile flush**: only the 8x8 tiles that changed are sent to the LCD, with a paused-picture check that the LCD equals the frame buffer). Measured HALT %: Breakout waiting 49 -> 94, Pong playing 66 -> 88, Invaders 48 -> 61 (full-screen redraw per frame; see `docs/PERF.md`).
 * **Emulator note**: `get_lcd()` of the Tilem core lags about three frames behind the LCD memory for moving objects (same with full blits), so LCD-versus-buffer comparisons are only valid for static pictures.
+
+---
+
+# Pass 3: whole-tree review after 0.6.0 / 1.0.0 (Opus)
+
+Method: the full battery on the tree as received (221/221, all host suites green), every diff since the first commit read, then the parts never
+reviewed before (native games library, Sokoban, Reversi, lock, notepad, launcher, firmware link layer and game cores, release tooling).
+Two whole-system checks were added because reading alone does not scale to this size:
+* a **RAM map audit** (every `.equ` address resolved, overlaps listed and checked one by one: most are apps that never run together);
+* a **random-key fuzzer** on the emulator: 120 sessions x 90 s, ~19 000 random key taps through every tab, app and game (ON included),
+  watching for resets, crash records, bad stack pointers and a frozen UI. Result: **0 sessions with problems** (before and after the fixes).
+Every fix has a check in section 30 of `selftest.py` (`tools/selftest_review2.py`) or a host test that failed before it; mutations that undo
+each fix were run and are caught.
+
+## Important
+
+| # | Finding | Reproduction (before the fix) | Fix |
+|---|---|---|---|
+| P3-1 | **The PIN screen corrupted the app it interrupted.** `lock_unlock` runs inside the app's `wait_key` (power sleep is called from the UI task) and used `v_ui0/v_ui2/v_ui3` (per-task scratch that `superos.inc` promises the kernel never touches) and `NUMBUF`. The notepad keeps the note number in `v_ui3` while the editor is open: sleep + PIN 1234 turned it into `$12` and the note was lost. | Test: note being edited, sleep, PIN, ENTER -> the list shows no note. | The lock saves the 16-byte task scratch, `NUMBUF` and `v_invert` next to the saved screen (RAM page 7, `$C500`) and puts them back. |
+| P3-2 | **`T9SEQ` overlapped six kernel variables** (milestone-2 bug). Declared 12 bytes at `VARS+$60`, on top of `v_blast`, `v_bjmp`, `v_wcols`, `v_model`, `v_edmode`, `v_edcase`. A 10-letter T9 word changed the AI model; 11 letters switched the editor mode in the middle of the word. | Test: 12 T9 keys -> `v_model = v_edmode = 50`. | `T9SEQ` moved to the free `VARS+$88` (12 B). The RAM audit now finds no overlap inside `VARS`. |
+| P3-3 | **Opening the periodic table / constants wiped the calculator's variables.** Page 4 used `$9E00-$9F5F` "never at the same time as the math apps", but the calculator keeps its variables A-Z, ANS, history and Y= in that RAM between launches (validated by a magic word, which page 4 did not touch). | Test: `5 STO A`, open the periodic table, back: `A*2 = -3.9E-25`. | Page 4 works in the native-games area (`$A400`), which every game re-initialises. |
+| P3-4 | **A CHIP-8 game wiped the grapher's Y= functions and window.** The CHIP-8 display buffer (`$A100`, 256 B) covered `GR_BASE` (`$A104..`); the pack menus (`$A200`) and the stream client (`$A300`) covered the rest of the grapher and the CAS / converter state. | Test: `Y1 = X`, play a CHIP-8 game: `Y1` bytes `80 58 29 00` -> `00 3C 00 00`. | CHIP-8 state `$AC00`, display `$AD00`, pack menus `$AE00`, stream variables `$AF00` (free, above a 3.5 KB OTA game at userMem, below the task stacks). `c8test` follows the new addresses. |
+| P3-5 | **OTA packages could be loaded over the task stack.** The limit was 5200 bytes but the code's own comment says a program must fit between userMem (`$9D95`) and the task stacks (`$B000`): 4715 bytes. A program loaded up to `$B1E5` shares its last bytes with the UI task stack it then runs on. (No crash reproduced with a zero-padded program: the stack in use was only a few bytes above the end.) | Test: a 4800-byte package was installed. | `OTA_MAX = $B000 - USERMEM` on the calculator (checked again before running a package installed by an older build), and 4715 in `ota_push.py`, the ESP32 upload server and the Python model. |
+| P3-6 | **After a user program the calculator showed garbage.** A program at userMem longer than ~107 bytes covers the calculator's variables (`$9EA0..`) but not its validity mark (`$9F68`) unless it is longer than 467 bytes. | Test: 300-byte OTA program, back to the calculator: `A*2 = -7.6E-14`. | `run_userprog` drops the mark when the program returns (not before: a long program lives there), so the calculator starts clean; `CALC_MAGIC` is shared through `superos.inc` and checked at assembly time against `m_magic`. |
+| P3-7 | **ESP32 crash on an empty reply.** The ZX0 optimizer returns `optimal[n - 1]` = `optimal[-1]` for 0 bytes. `store::list()` is `""` when the ESP32 has no packages (its factory state), so OTA > PC PACKAGES crashed the chip; the Python model raised as well, so the calculator just waited. | Host test `esp32-firmware/test_host/zx0_test.c` (the firmware's own packer): access violation on 0 bytes. Emulator: the list never came. | `zx0_pack` packs an empty input as one NUL (an empty text for the calculator); same rule in `bridge_pc/services.py`. Emulator check: an empty store answers `(SIN PAQUETES)`. **Firmware: compiled and host-tested, not run on a chip.** |
+| P3-8 | **Signature tooling dropped a byte 1 time in 256.** `fix_8xu_tail.py` and `verify_8xu.py` located the 67-byte signature field by stripping trailing `FF`; an RSA value that ends in `FF` lost its last byte (the build stopped, or the verifier computed on a truncated value). | Test: the release file with its last signature byte set to `FF` -> `SystemExit`. | Both take the field by its length byte (`02 0D 40` = 3 + 64). |
+
+## Minor (fixed unless noted)
+* `make_release.ps1` ignored every verifier failure of `SuperOS_bringup.8xu`, signature included: it is now verified with `--rom none` (all checks except the byte compare with the normal dev ROM) and a failure stops the release.
+* `invaders.z80` and six Python files started with a UTF-8 BOM (in the `.z80`, spasm saw `EF BB BF` as a label before the comment): removed.
+* `sokoban.z80` centres a level on the width of its *first* row; `check_sokoban_levels.py` only checked the widest row against 16. The CI check now applies the same rule as the Z80 (no current level is affected).
+* `GL_HS` comment said 8 high scores; it is 10 slots (ids 0-8 used). `app_pending` and the "milestone" comment of the launcher table are dead code now that byte 4 is the exam-mode flag.
+* `dist/LEEME.txt` still said the `.8xu` had never been tried on a real calculator and listed neither the bring-up file nor the native games; `REVIEW.md` pass 1 said the same: updated to the state in `STATUS.md`.
+* Not changed: the ZX0 reference optimizer prints a progress bar on stdout (the ESP32's serial port) for every reply; harmless, a little slower.
+* Not changed: section numbers in `selftest.py` repeat (two "25", two "27"); cosmetic.
+
+## Checked and found correct
+Sokoban (push / undo / restart / bounds, stack balance in the push path), Reversi (8-direction walk with off-board wrap detection, flip-back counter, passes, game end, CPU table), notepad slot arithmetic and limits, `glib` (frame pacing, sleep inside a game forces a full redraw, LFSR seed, `gl_rnd_n` for n = 1, high scores now in the journalled settings), the settings journal with 64-byte records (old 16-byte journals are reclaimed by the blank-slot rule of pass 2), build-id lock reset, firmware link layer (CRC on oversize frames short-circuits, turbo timeouts, empty `send_raw`), `games.cpp` start / stop ownership, the Game Boy core's bounds-checked ROM reads, the delta-frame codec's worst case (781 B in an 800 B buffer).
+
+## Not verified (unchanged)
+Everything on hardware after the first boot: the key-04 signature, LCD init, keyboard timing, every fix of passes 2 and 3; the ESP32 firmware on a chip.

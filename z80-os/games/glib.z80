@@ -39,7 +39,7 @@ gl_tiles    .equ GL+41          ; 12 bytes: dirty tiles of the current flush (bi
 glf_bm      .equ GL+53
 gl_sig      .equ GL+54          ; 16-bit hash of the game state at the last drawn frame
 GV          .equ $A440          ; first byte of the per-game variables
-GL_HS       .equ s_hisc         ; 8 x 16-bit high scores, part of the settings: kept in battery-backed RAM and in the flash journal
+GL_HS       .equ s_hisc         ; 10 x 16-bit high scores (game ids 0-8 in use), part of the settings: kept in battery-backed RAM and in the flash journal
 
 GK_L        .equ $01
 GK_R        .equ $02

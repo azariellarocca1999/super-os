@@ -5,7 +5,7 @@
 ;   3 Erase all   : erase the package store sectors
 ;   4 Receive     : ask the ESP32 to open its HTTP upload window (tools/ota_push.py from the PC)
 ; =============================================================================
-OTA_MAX     .equ 5200           ; a program must fit between userMem ($9D95) and the task stacks ($B000)
+OTA_MAX     .equ $B000-USERMEM  ; 4715 B: a program must fit between userMem ($9D95) and the task stacks ($B000); the UI task stack it runs on is $B100-$B1FF
 PKGNAME     .equ WIFIBUF        ; 16 B: name of the chosen package
 IDXMAP      .equ WIFIBUF+32     ; 10 B: directory index of each displayed line
 PKGTYPE     .equ WIFIBUF+20     ; 1 Z80 program, 2 CHIP-8 game (third field '8' of a list line)
@@ -385,6 +385,14 @@ ota_inst_end:
     call S_PKG_ENTRY
     ld a,(PKGREC+PK_TYPE)
     ld (PKGTYPE),a
+    ld hl,OTA_MAX               ; installed by an older build with the old 5200-byte limit: loading it would reach the UI task stack
+    ld bc,(PKGREC+PK_LEN)
+    or a
+    sbc hl,bc
+    jr nc,ota_inst_fit
+    ld hl,STR_O_BIG
+    jp ui_message
+ota_inst_fit:
     ld a,(v_ui3)
     ld de,USERMEM
     call S_PKG_LOAD             ; BC = length

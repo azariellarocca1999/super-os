@@ -7,22 +7,22 @@
 ;   CMD_TURBO [1] / [0]                    -> calculator-clocked byte layer on / off
 ; Keys are the CHIP-8 keypad mask (see c8_keytab); flags bit 0 = "send a full frame" (first frame, after an error).
 ; =============================================================================
-st_names    .equ $A300          ; up to 10 titles x 12 bytes
-st_n        .equ $A380
-st_sel      .equ $A381
-st_tx       .equ $A382
-st_bl       .equ $A383
-st_flags    .equ $A384
-st_fcnt     .equ $A385
-st_fps      .equ $A386
-st_t0       .equ $A387          ; 2
-st_j        .equ $A389
-st_fail     .equ $A38A
-st_rp       .equ $A38C          ; 2: reply read pointer
-st_rl       .equ $A38E          ; 2: reply bytes left
-st_font     .equ $A390
-st_mode     .equ $A391
-st_sb       .equ $A392
+st_names    .equ $AF00          ; up to 10 titles x 12 bytes
+st_n        .equ $AF80
+st_sel      .equ $AF81
+st_tx       .equ $AF82
+st_bl       .equ $AF83
+st_flags    .equ $AF84
+st_fcnt     .equ $AF85
+st_fps      .equ $AF86
+st_t0       .equ $AF87          ; 2
+st_j        .equ $AF89
+st_fail     .equ $AF8A
+st_rp       .equ $AF8C          ; 2: reply read pointer
+st_rl       .equ $AF8E          ; 2: reply bytes left
+st_font     .equ $AF90
+st_mode     .equ $AF91
+st_sb       .equ $AF92
 st_fb       .equ $A400          ; the picture the deltas are applied to (768 bytes)
 
 pack_c:

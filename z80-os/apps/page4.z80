@@ -7,7 +7,7 @@
 #include "mathjt.inc"
 #include "pstrings.inc"
 
-P_BASE   .equ $9E00             ; RAM page $81 user area (shared with the math apps, never used at the same time)
+P_BASE   .equ $A400             ; RAM page $81, the native games area (re-initialised by every game): NOT $9E00, where the calculator keeps its variables
 p_idx    .equ P_BASE            ; up to 118 line pointers (236 bytes)
 p_sp     .equ (P_BASE+240)
 p_row    .equ (P_BASE+242)

@@ -43,6 +43,9 @@ def validate(level):
     w, h = max(len(r) for r in level), len(level)
     if w > 16 or h > 9:
         bad.append("size %dx%d exceeds 16x9" % (w, h))
+    ox = (16 - len(level[0])) // 2               # sokoban.z80 (sk_load) centres on the FIRST row's width: a wider later row would wrap into the next grid row
+    if ox + w > 16:
+        bad.append("a row is wider than the first one and runs past column 15 once centred (x offset %d)" % ox)
     walls, goals, boxes, player = parse(level)
     if player is None:
         bad.append("no player")

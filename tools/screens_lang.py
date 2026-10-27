@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """English-language contact sheet of the main screens (to eyeball overflow): build/test/lang_en.png.   python tools/screens_lang.py"""
 import os
 import sys

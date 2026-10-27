@@ -492,7 +492,7 @@ def main():
     check("[PLOT:] block: the grapher shows the parabola", lit.get("graph", 0) > 150, "(lit=%s)" % lit.get("graph"))
 
     print("== 20. Milestone 3: periodic table, constants (-> ANS), Wikipedia and weather through the ESP32")
-    P_Z = 0x9E00 + 245
+    P_Z = 0xA400 + 245                                     # page 4 work RAM (P_BASE in z80-os/apps/page4.z80)
     s = Session("m3pt", start=1500)
     s.press("WINDOW", "K5")                                  # MATH tab -> 5 PERIODIC TABLE
     s.t += 900
@@ -560,6 +560,8 @@ def main():
         selftest_sokoban.run(check)
         import selftest_review
         selftest_review.run(check)
+        import selftest_review2
+        selftest_review2.run(check)
     print()
     n = sum(results)
     print("RESULT: %d/%d checks passed" % (n, len(results)))

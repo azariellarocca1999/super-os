@@ -4,15 +4,15 @@
 #include "kernel/superos.inc"
 #include "kernel/sys.inc"
 
-pk_dir      .equ $A200          ; copy of the page 6 directory (1 + 12 x 16 bytes)
-pk_list     .equ $A2D0          ; indices of the games of the chosen pack
-pk_buf      .equ $A2E0          ; one menu line
-pk_id       .equ $A2F8
-pk_n        .equ $A2F9
-pk_sel      .equ $A2FA
-pk_font     .equ $A2FB
-pk_j        .equ $A2FC
-pk_game     .equ $A2FD
+pk_dir      .equ $AE00          ; copy of the page 6 directory (1 + 12 x 16 bytes)
+pk_list     .equ $AED0          ; indices of the games of the chosen pack
+pk_buf      .equ $AEE0          ; one menu line
+pk_id       .equ $AEF8
+pk_n        .equ $AEF9
+pk_sel      .equ $AEFA
+pk_font     .equ $AEFB
+pk_j        .equ $AEFC
+pk_game     .equ $AEFD
 
 .org $4000
 P5_JT:

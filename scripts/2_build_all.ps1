@@ -37,6 +37,8 @@ if ($Test) {
     if ($LASTEXITCODE) { throw "games engine tests failed" }
     & $sh esp32-firmware/test_host/build_jobs_test.sh
     if ($LASTEXITCODE) { throw "ESP32 job ownership host test failed" }
+    & $sh esp32-firmware/test_host/build_zx0_test.sh
+    if ($LASTEXITCODE) { throw "ESP32 ZX0 packer host test failed" }
     python tools\c8test.py
     if ($LASTEXITCODE) { throw "CHIP-8 interpreter tests failed" }
     python tools\c8games_test.py

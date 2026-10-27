@@ -122,8 +122,8 @@ def main():
           "signature = records of 32 + 32 + 3 bytes, all at address 0000 (rabbitsign's 3 x 32 padded layout is what a real boot code rejected?)")
     check(b.endswith(b"-- CONVERT 2.6 --\r\n"), "file ends with the TI terminator line ':00000001FF   -- CONVERT 2.6 --' + CRLF")
     print("== signature block")
-    sbytes = b"".join(d for _, _, d in sig).rstrip(b"\xff")
-    check(len(sbytes) >= 67 and sbytes[:3] == bytes([0x02, 0x0D, 0x40]), "signature field header 02 0D 40 + 64-byte RSA value (got %s)" % sbytes[:3].hex())
+    sbytes = b"".join(d for _, _, d in sig)                  # by the length byte below, never rstrip(FF): the RSA value may end in FF
+    check(len(sbytes) >= 3 + (sbytes[2] if len(sbytes) > 2 else 255) and sbytes[:3] == bytes([0x02, 0x0D, 0x40]), "signature field header 02 0D 40 + 64-byte RSA value (got %s)" % sbytes[:3].hex())
     keyfile = os.path.join(root, "tools", "keys", "04.key")   # OS key: the official TI OS 1.19 and KnightOS verify against it (0104 = app key)
     tok = open(keyfile).read().split()[0]           # rabbitsign key format: [length byte][little-endian hex]
     modulus = int.from_bytes(bytes.fromhex(tok[2:2 + 2 * int(tok[:2], 16)]), "little")

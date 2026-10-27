@@ -4,7 +4,7 @@
   python tools/ota_push.py build/mygame.bin --name MYGAME --host 192.168.1.50 [--port 80]
   python tools/ota_push.py build/demo.bin --name HELLO --host 127.0.0.1 --port 8266     (simulator)
 
-  --kind bin    (default) Z80 program, <= 5200 bytes, runs on the calculator
+  --kind bin    (default) Z80 program, <= 4715 bytes, runs on the calculator
   --kind game   CHIP-8 game run by the calculator's own interpreter (<= 3584 bytes); a .c8 assembly source (tools/chip8.py syntax)
                 or a binary .ch8 ROM.  Appears in OTA > PC PACKAGES / INSTALLED; ENTER plays it.
   --kind gb     Game Boy ROM kept on the ESP32 (<= 1.5 MB), listed under GAMES > STREAM 3D and played through Peanut-GB
@@ -36,7 +36,7 @@ def main():
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import chip8
         data = chip8.assemble(data.decode(), a.file)
-    limit = {"bin": 5200, "game": 3584, "ch8": 3584, "gb": 1_500_000}[a.kind]
+    limit = {"bin": 4715, "game": 3584, "ch8": 3584, "gb": 1_500_000}[a.kind]   # bin: $B000 - userMem ($9D95), see OTA_MAX in z80-os/ui/ota.z80
     if len(data) > limit:
         sys.exit("%s package is %d bytes: the limit is %d" % (a.kind, len(data), limit))
     req = urllib.request.Request("http://%s:%d/upload?name=%s&kind=%s" % (a.host, a.port, name, a.kind), data, {"Content-Type": "application/octet-stream"}, method="POST")

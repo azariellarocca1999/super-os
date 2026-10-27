@@ -31,10 +31,10 @@ def fix(path):
         if ln.startswith(b":"):
             raw = bytes.fromhex(ln[1:].decode().split()[0])
             sig += raw[4:4 + raw[0]]
-    sig = sig.rstrip(b"\xff")
-    if len(sig) < 67 or sig[:3] != bytes([0x02, 0x0D, 0x40]):
+    # the field is 02 0D <len> + <len> bytes; take it by its length, never by stripping the FF padding: the RSA value itself may end in FF
+    if len(sig) < 3 or sig[:3] != bytes([0x02, 0x0D, 0x40]) or len(sig) < 3 + sig[2]:
         raise SystemExit("fix_8xu_tail: unexpected signature field %s" % sig[:3].hex())
-    sig = sig[:67]
+    sig = sig[:3 + sig[2]]
     body = b"\r\n".join(lines[:term[1] + 1]) + b"\r\n"
     body += hex_record(0, sig[:32]) + hex_record(0, sig[32:64]) + hex_record(0, sig[64:67])
     body += TERMINATOR + b"   -- CONVERT 2.6 --\r\n"

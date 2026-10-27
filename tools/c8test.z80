@@ -1,5 +1,5 @@
 ; CHIP-8 interpreter test stub: page 0 of a throw-away ROM.  Provides the two syscalls the interpreter page needs,
-; loads build/c8_rom.inc into CHIP-8 memory, runs `c8_count` instructions and leaves the state in RAM ($A000..$A1FF, window page 2).
+; loads build/c8_rom.inc into CHIP-8 memory, runs `c8_count` instructions and leaves the state in RAM ($AC00..$ADFF, window page 2).
 #include "kernel/superos.inc"
 .org $0000
     di
@@ -35,6 +35,6 @@ start:
 done:
     halt
     jr done
-c8_keys_addr .equ $A047
-c8_done_addr .equ $A05F
+c8_keys_addr .equ $AC47
+c8_done_addr .equ $AC5F
 #include "c8_rom.inc"

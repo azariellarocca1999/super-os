@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Milestone 4 screenshots -> docs/screens/milestone4.png (game menu, the six CHIP-8 games, streamed maze 3D and Game Boy)."""
 import os
 import sys

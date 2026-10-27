@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Checks added by the supervision review (docs/REVIEW.md, second pass).  Each one reproduced a defect before its fix.
 Called from selftest.py; `python tools/selftest_review.py` runs only this part."""
 import os

@@ -21,7 +21,7 @@ Everything after the boot screen (keyboard fix, games, diagnostics, calculator, 
 
 | Check | Count | How to run |
 |---|---|---|
-| Emulator self-test (TI-83 Plus SE core + virtual ESP32) | **221 checks** (UI, link, OTA, calculator, CAS client, games, lock / notes / journal, whole Reversi games against a Python reference, all Sokoban levels solved, no-ESP32 behaviour, fault injection) | `python tools\selftest.py` (`--m3` = only the milestone 3 UI part, `python tools\selftest_m4.py` = only milestone 4, `python tools\selftest_noesp.py` = only the no-ESP32 part) |
+| Emulator self-test (TI-83 Plus SE core + virtual ESP32) | **230 checks** (UI, link, OTA, calculator, CAS client, games, lock / notes / journal, whole Reversi games against a Python reference, all Sokoban levels solved, no-ESP32 behaviour, fault injection, review pass 3: app state across the PIN screen and across other apps, OTA size, empty ESP32 store) | `python tools\selftest.py` (`--m3` = only the milestone 3 UI part, `python tools\selftest_m4.py` = only milestone 4, `python tools\selftest_noesp.py` = only the no-ESP32 part) |
 | Signed `.8xu`: structure, pages, checksums, untouched factory pages, **RSA signature math (key 04)**, boot entry bytes | 22 checks | `python tools\verify_8xu.py` (also run by `2_build_all.ps1`) |
 | Z80 floating point library vs Python | **324 cases** | `python tools\mathtest.py` |
 | Super-CAS (same C++ as the firmware, host build) | **212 checks** | `python cas\cas_tests.py` |
@@ -29,6 +29,7 @@ Everything after the boot screen (keyboard fix, games, diagnostics, calculator, 
 | CHIP-8 games played by a bot on the reference | **9 checks** | `python tools\c8games_test.py` |
 | Streamed-games engine (the ESP32 C++, host build) | **13 checks** (codec, raycaster, CHIP-8 vs reference, Peanut-GB dmg-acid2) | `python games\host\play_tests.py` |
 | ESP32 worker-job ownership protocol (`src/jobs.h`, real threads, host build) | **5 checks** (20 000 jobs) | `sh esp32-firmware/test_host/build_jobs_test.sh` |
+| ESP32 ZX0 packer (`lib/zx0`, host build): empty / 1-byte / list replies, crash-isolated | **3 checks** | `sh esp32-firmware/test_host/build_zx0_test.sh` |
 | Peanut-GB upstream tests on this toolchain (blargg cpu_instrs, instr_timing, dmg-acid2 hash) | pass | `tools/src/Peanut-GB/test` |
 | ESP32-S3 firmware | builds: RAM 16.7 %, flash 42.5 % | `.\scripts\2_build_all.ps1` |
 
@@ -104,7 +105,7 @@ at `$BE00`; flash page 3 = math + calculator + grapher + CAS client + converter 
 * **Super-CAS on the chip:** the engine runs in a 32 KB FreeRTOS task; symbolic work on the real ESP32-S3 has not been timed. Hard integrals may take seconds.
 * **CAS coverage:** no closed form -> `ERROR: no elementary antiderivative found`; trig equations return principal solutions (no `+2k*pi`); `solve` scans [-60, 60] for non-polynomial equations; no differential equations, no series sums to infinity.
 * **Calculator numbers:** no complex numbers in the calculator itself (the CAS has `i`); `sin`/`cos` lose precision beyond |x| ~ 3e4; results above 1.7e38 report an overflow.
-* **RTC pauses in deep sleep**; **SuperLink turbo** (60-115 kbit/s) not implemented; packages are raw Z80 images (<= 5200 bytes).
+* **RTC pauses in deep sleep**; **SuperLink turbo** (60-115 kbit/s) not implemented; packages are raw Z80 images (<= 4715 bytes: userMem to the task stacks).
 * **API key / Wi-Fi password** are now sealed in the ESP32's NVS with a chip-bound AES key (obfuscation, not flash encryption; compiled only, see `docs/REVIEW.md`).
 
 ## First contact with real hardware (2026-10-26)

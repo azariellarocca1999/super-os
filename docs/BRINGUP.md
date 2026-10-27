@@ -48,7 +48,7 @@ CLOCK -> ENTER syncs the time through NTP. The first request after the ESP32 sle
 
 ## 5. OTA packages
 
-1. Build a Z80 program image (raw, origin $9D95, <= 5200 bytes; Ion-style header optional).
+1. Build a Z80 program image (raw, origin $9D95, <= 4715 bytes; Ion-style header optional).
 2. Calculator: SYS tab -> OTA -> `4 RECEIVE FROM PC` (opens a 120 s upload window and shows the ESP32 IP).
 3. PC: `python tools\ota_push.py game.bin --name GAME --host <ip>` (or `superos-esp.local`).
 4. Calculator: OTA -> `1 PC PACKAGES` -> pick -> installed into flash; OTA -> `2 INSTALLED` -> ENTER runs it, DEL deletes.

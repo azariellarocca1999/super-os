@@ -297,7 +297,14 @@ bcall_table:
 run_program:
     ld de,USERMEM
     ldir
-run_userprog:
+run_userprog:                   ; the program is already at userMem; it returns here
+    call run_userprog_go
+    push hl
+    ld hl,0                     ; it may have covered the calculator's variables/history ($9E00..) without touching their validity
+    ld (CALC_MAGIC),hl          ; mark: drop the mark (now, not before: a program over 467 bytes lives there) so the calculator starts clean
+    pop hl
+    ret
+run_userprog_go:
     ld hl,USERMEM
     ld a,(hl)
     cp $C9

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Base-system checks with NO ESP32 attached (floating link lines): every app that needs the co-processor must fail with a clear message,
 must never freeze the UI, and CLEAR must cancel the wait.  Called from selftest.py; `python tools/selftest_noesp.py` runs only this part."""
 import os

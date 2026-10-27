@@ -125,7 +125,7 @@ void poll() {
   }
   bool rom = kind == "gb" || kind == "ch8";
   bool game = kind == "game";                                   // CHIP-8 game run by the calculator: /store/NAME.c8
-  size_t limit = kind == "gb" ? 1500000u : (kind == "ch8" || game) ? 3584u : 5200u;
+  size_t limit = kind == "gb" ? 1500000u : (kind == "ch8" || game) ? 3584u : 4715u;   // bin: $B000 - userMem, see OTA_MAX in z80-os/ui/ota.z80
   if (!req.startsWith("POST /upload") || !valid_name(name) || clen == 0 || clen > limit || (kind.length() && !rom && !game && kind != "bin")) {
     c.print("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
     c.stop();

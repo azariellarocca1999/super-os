@@ -68,6 +68,7 @@ NETBUF      .equ $9000      ; 300 B frame buffer
 INBUF       .equ $9140      ; text input (96 B)
 PLOTSSCREEN .equ $9340      ; TI-OS compatible frame buffer
 USERMEM     .equ $9D95      ; TI-OS compatible program load address
+CALC_MAGIC  .equ $9F68      ; the calculator's "my RAM is valid" mark (m_magic in math/edit.z80, checked there): user programs overwrite that RAM
 TASKSTK     .equ $B000      ; task stacks: slot n occupies $B000+(n*$100)+$FF downwards
 BIGSTK      .equ $B800      ; (reserved)
 SYSSTK      .equ $BFFF      ; boot/idle stack top
@@ -141,7 +142,7 @@ v_pass      .equ VARS+$4F
 v_cptr      .equ VARS+$50
 v_dllen     .equ VARS+$52
 v_str       .equ VARS+$54   ; current language string table pointer
-T9SEQ       .equ VARS+$60   ; 12 B
+T9SEQ       .equ VARS+$88   ; 12 B ($8688-$8693; it used to sit at VARS+$60, on top of v_blast..v_edcase)
 T9CAND0     .equ VARS+$70   ; 3 pointers
 v_espidle   .equ VARS+$5E   ; 16-bit seconds since the last ESP32 traffic
 v_curcol    .equ VARS+$58

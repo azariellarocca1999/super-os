@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Milestone 4 checks on the headless emulator: CHIP-8 game packs on the Z80, streamed games over the SuperLink turbo byte layer.
 Called from selftest.py (shared results list); `python tools/selftest_m4.py` runs only this part."""
 import os

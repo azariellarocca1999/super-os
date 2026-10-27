@@ -40,7 +40,7 @@ def z80_run(rom_bytes, count, keymask, ms=None):
     path = os.path.join(build, "c8t.rom")
     open(path, "wb").write(img)
     ms = ms or 150 + count // 3
-    st = dump(path, 0xA000, 0x200, ms)
+    st = dump(path, 0xAC00, 0x200, ms)
     mem = dump(path, 0xC000, 4096, ms)
     return st, mem
 

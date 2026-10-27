@@ -13,10 +13,10 @@ if ($LASTEXITCODE) { throw "build / tests failed: no release" }
 
 python tools\build_bringup.py                     # dist\SuperOS_bringup.8xu (contrast sweep + boot progress bar), then the normal build again
 if ($LASTEXITCODE) { throw "bring-up variant failed" }
-foreach ($f in "dist\SuperOS.8xu", "dist\SuperOS_bringup.8xu") {
-    python tools\verify_8xu.py $f
-    if ($LASTEXITCODE -and $f -eq "dist\SuperOS.8xu") { throw "$f failed its structure checks" }
-}
+python tools\verify_8xu.py dist\SuperOS.8xu
+if ($LASTEXITCODE) { throw "dist\SuperOS.8xu failed its checks" }
+python tools\verify_8xu.py dist\SuperOS_bringup.8xu --rom none        # every check except the byte compare with the (normal) dev ROM
+if ($LASTEXITCODE) { throw "dist\SuperOS_bringup.8xu failed its checks (structure, signature, record layout)" }
 
 New-Item -ItemType Directory -Force release | Out-Null
 Copy-Item dist\SuperOS.8xu, dist\SuperOS_bringup.8xu, dist\esp32s3zero_firmware.bin release\ -Force

@@ -1,4 +1,4 @@
-﻿; =============================================================================
+; =============================================================================
 ; SPACE INVADERS (native).  4 rows x 8 aliens that speed up as they die, three destructible bunkers, a bonus ship, three lives, endless waves.
 ;   LEFT / RIGHT move, 2ND / ENTER / ALPHA / UP fire (one shot at a time), MODE / CLEAR pause.
 ; =============================================================================

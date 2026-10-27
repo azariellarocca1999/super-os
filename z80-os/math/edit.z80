@@ -36,6 +36,9 @@ m_row    .equ (ED_BASE+406)
 fm_tmp   .equ (ED_BASE+408)
 ED_END   .equ (ED_BASE+420)
 MSTACK   .equ $BE00             ; private stack for the math apps (BIGSTK region $B800..$BDFF)
+#if (m_magic - CALC_MAGIC) != 0
+.error "m_magic moved: update CALC_MAGIC in kernel/superos.inc (run_userprog clears it)"
+#endif
 
 ed_start:
     ld (ed_buf),hl

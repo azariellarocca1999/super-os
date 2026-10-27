@@ -1,27 +1,27 @@
 ; =============================================================================
 ; CHIP-8 interpreter (no SCHIP).  Semantics identical to tools/chip8.py (the reference it is tested against).
-; CHIP-8 memory = RAM page 2 mapped at $C000 (address a -> $C000+a).  State lives in RAM page $81 at $A000.
+; CHIP-8 memory = RAM page 2 mapped at $C000 (address a -> $C000+a).  State lives in RAM page $81 at $AC00 (above the calculator memory at $9E00-$A316 and above a 3.5 KB OTA game loaded at userMem).
 ; =============================================================================
-C8_VH       .equ $A0
-c8_v        .equ $A000          ; V0..VF (256-aligned: V[x] = $A000+x)
-c8_stk      .equ $A020          ; 16 x 2 bytes
-c8_pc       .equ $A040
-c8_i        .equ $A042
-c8_sp       .equ $A044          ; byte offset into c8_stk (0..32)
-c8_dt       .equ $A045
-c8_st       .equ $A046
-c8_keys     .equ $A047          ; 16 bits, bit n = key n held
-c8_rng      .equ $A049
-c8_dirty    .equ $A04B
-c8_acc      .equ $A04C          ; 60 Hz timer accumulator (against the 108 Hz tick)
-c8_py       .equ $A04D
-c8_bx       .equ $A04E
-c8_sh       .equ $A04F
-c8_krow     .equ $A050          ; 8 bytes: raw key matrix (1 = pressed)
-c8_yield    .equ $A05A          ; set by Fx07: the game is waiting for the timer -> end of frame, show it
-c8_sub      .equ $A058          ; instruction counter inside a 60 Hz period (tests)
-c8_nr       .equ $A05B          ; ticks since the last picture was shown (mid-frame bursts are not shown)
-c8_disp     .equ $A100          ; 64x32 bits, 8 bytes per row
+C8_VH       .equ $AC
+c8_v        .equ $AC00          ; V0..VF (256-aligned: V[x] = $AC00+x)
+c8_stk      .equ $AC20          ; 16 x 2 bytes
+c8_pc       .equ $AC40
+c8_i        .equ $AC42
+c8_sp       .equ $AC44          ; byte offset into c8_stk (0..32)
+c8_dt       .equ $AC45
+c8_st       .equ $AC46
+c8_keys     .equ $AC47          ; 16 bits, bit n = key n held
+c8_rng      .equ $AC49
+c8_dirty    .equ $AC4B
+c8_acc      .equ $AC4C          ; 60 Hz timer accumulator (against the 108 Hz tick)
+c8_py       .equ $AC4D
+c8_bx       .equ $AC4E
+c8_sh       .equ $AC4F
+c8_krow     .equ $AC50          ; 8 bytes: raw key matrix (1 = pressed)
+c8_yield    .equ $AC5A          ; set by Fx07: the game is waiting for the timer -> end of frame, show it
+c8_sub      .equ $AC58          ; instruction counter inside a 60 Hz period (tests)
+c8_nr       .equ $AC5B          ; ticks since the last picture was shown (mid-frame bursts are not shown)
+c8_disp     .equ $AD00          ; 64x32 bits, 8 bytes per row
 
 c8_reset:                       ; clear the state; CHIP-8 memory must be cleared / loaded by the caller
     ld hl,c8_v
