@@ -17,6 +17,9 @@ ui_entry:
     call S_RAM_PAGE
     call ui_setlang
     call ui_crashreport
+    ld a,(s_lock)
+    or a
+    call nz,ui_unlock           ; a lock set before the restart is still on
 #if AUTOGAME
     ld ix,AUTOGAME
     ld a,5
@@ -31,6 +34,8 @@ ui_entry:
 #include "ui/netapps.z80"
 #include "ui/ota.z80"
 #include "ui/diag.z80"
+#include "ui/lock.z80"
+#include "ui/notes.z80"
 #include "ui/mathapps.z80"
 #include "strings.z80"
 

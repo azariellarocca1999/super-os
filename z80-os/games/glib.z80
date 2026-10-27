@@ -39,7 +39,7 @@ gl_tiles    .equ GL+41          ; 12 bytes: dirty tiles of the current flush (bi
 glf_bm      .equ GL+53
 gl_sig      .equ GL+54          ; 16-bit hash of the game state at the last drawn frame
 GV          .equ $A440          ; first byte of the per-game variables
-GL_HS       .equ $A7C0          ; 8 x 16-bit high scores (battery-backed RAM: they survive sleep, not a battery change)
+GL_HS       .equ s_hisc         ; 8 x 16-bit high scores, part of the settings: kept in battery-backed RAM and in the flash journal
 
 GK_L        .equ $01
 GK_R        .equ $02
@@ -630,13 +630,18 @@ gl_hs_set:                      ; HL = score: stores it when it beats the best; 
     ret c
     ret z
     ex de,hl
-    call gl_hs_ptr
+    push de
+    call gl_hs_ptr              ; (clobbers DE)
+    pop de
     ld (hl),e
     inc hl
     ld (hl),d
     ld a,1
     ld (gl_new),a
     ex de,hl
+    push hl
+    call S_SETTINGS_SAVE        ; a new record: checksum + flash journal (rare, so the wear is nothing)
+    pop hl
     ret
 
 gl_result:                      ; HL = (ES, EN) title pair: overlay with the standard hint; CF = leave, NC = play again

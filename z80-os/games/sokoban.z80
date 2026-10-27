@@ -1,0 +1,525 @@
+; =============================================================================
+; SOKOBAN (native).  Push every box onto a goal.  8 levels (tools/gen_sokoban.py proves each one solvable), 16 x 9 cells of 6 px.
+;   arrows move / push, ALPHA / DEL undo the last move, 2ND / ENTER restart the level, MODE / CLEAR pause.
+;   The best score is the number of levels cleared: the game resumes from there.
+; =============================================================================
+sk_px       .equ GV+0
+sk_py       .equ GV+1
+sk_lv       .equ GV+2           ; current level 0..SK_N-1
+sk_moves    .equ GV+3           ; 16-bit
+sk_rep      .equ GV+5
+sk_dirty    .equ GV+6
+sk_x        .equ GV+7
+sk_y        .equ GV+8
+sk_ox       .equ GV+9
+sk_oy       .equ GV+10
+sk_ptr      .equ GV+11          ; 16-bit
+sk_dx       .equ GV+13
+sk_dy       .equ GV+14
+sk_upx      .equ GV+15          ; undo snapshot: player, moves
+sk_upy      .equ GV+16
+sk_umv      .equ GV+17          ; 16-bit
+sk_ucan     .equ GV+19
+sk_grid     .equ $A900          ; 16 x 9 cells: b0 wall, b1 goal, b2 box
+sk_undo     .equ $AA00          ; copy of the grid before the last move
+SK_N        .equ 8
+
+game_sokoban:
+    ld a,7
+    ld b,4
+    call gl_init
+    call gl_hs_get              ; resume where the best score left off
+    ld a,l
+    cp SK_N
+    jr c,sk_first
+    xor a
+sk_first:
+    ld (sk_lv),a
+sk_start:
+    call sk_load
+    ld hl,0
+    ld (sk_moves),hl
+    xor a
+    ld (sk_ucan),a
+    ld (sk_rep),a
+    inc a
+    ld (sk_dirty),a
+    call gl_resync
+sk_loop:
+    call gl_tick
+    ld a,(gl_press)
+    and GK_Q|GK_P
+    jr z,sk_nop
+    call gl_pause
+    jr c,sk_quit
+    ld a,1
+    ld (sk_dirty),a
+sk_nop:
+    ld a,(gl_press)
+    and GK_A
+    jr nz,sk_start              ; restart the level
+    ld a,(gl_press)
+    and GK_B
+    call nz,sk_undoit
+    call sk_input
+    ld a,(sk_dirty)
+    or a
+    jr z,sk_loop
+    xor a
+    ld (sk_dirty),a
+    call sk_render
+    call gl_flush
+    call sk_won
+    jr nz,sk_loop
+    ld a,(sk_lv)                ; level cleared
+    inc a
+    ld l,a
+    ld h,0
+    call gl_hs_set
+    ld a,(sk_lv)
+    inc a
+    cp SK_N
+    jr nc,sk_all
+    ld (sk_lv),a
+    ld hl,sk_t_ok
+    call gl_result
+    jr c,sk_quit
+    jp sk_start
+sk_all:
+    xor a
+    ld (sk_lv),a
+    ld hl,sk_t_all
+    call gl_result
+    jr c,sk_quit
+    jp sk_start
+sk_quit:
+    jp gl_exit
+
+; ---- level loader -------------------------------------------------------------------------------------------------------------
+sk_cellptr:                     ; -> HL = &grid[sk_y * 16 + sk_x]  (clobbers A, DE)
+    ld a,(sk_y)
+    rlca
+    rlca
+    rlca
+    rlca
+    ld hl,sk_x
+    add a,(hl)
+    ld l,a
+    ld h,0
+    ld de,sk_grid
+    add hl,de
+    ret
+
+sk_load:
+    ld a,(sk_lv)
+    ld b,a
+    ld hl,sk_levels
+skl_find:
+    ld a,b
+    or a
+    jr z,skl_at
+skl_lvl:
+    ld a,(hl)
+    or a
+    jr z,skl_lend               ; an empty row ends the level
+skl_ch:
+    ld a,(hl)
+    inc hl
+    or a
+    jr nz,skl_ch
+    jr skl_lvl
+skl_lend:
+    inc hl
+    dec b
+    jr skl_find
+skl_at:
+    ld (sk_ptr),hl
+    call gl_len                 ; width of the first row
+    ld c,a
+    ld a,16
+    sub c
+    srl a
+    ld (sk_ox),a
+    ld b,0                      ; rows
+    push hl
+skl_cnt:
+    ld a,(hl)
+    or a
+    jr z,skl_cd
+    inc b
+skl_cn:
+    ld a,(hl)
+    inc hl
+    or a
+    jr nz,skl_cn
+    jr skl_cnt
+skl_cd:
+    pop hl
+    ld a,9
+    sub b
+    srl a
+    ld (sk_oy),a
+    ld (sk_y),a
+    ld hl,sk_grid
+    ld de,sk_grid+1
+    ld bc,143
+    ld (hl),0
+    ldir
+    ld hl,(sk_ptr)
+skl_fr:
+    ld a,(hl)
+    or a
+    ret z
+    ld a,(sk_ox)
+    ld (sk_x),a
+skl_fc:
+    ld a,(hl)
+    inc hl
+    or a
+    jr z,skl_rowend
+    ld c,a
+    push hl
+    call sk_cellptr
+    ld a,c
+    ld d,1
+    cp '#'
+    jr z,skl_set
+    ld d,2
+    cp '.'
+    jr z,skl_set
+    ld d,4
+    cp '$'
+    jr z,skl_set
+    ld d,6
+    cp '*'
+    jr z,skl_set
+    ld d,0
+    cp '@'
+    jr z,skl_pl
+    ld d,2
+    cp '+'
+    jr z,skl_pl
+    ld d,0
+    jr skl_set
+skl_pl:
+    ld a,(sk_x)
+    ld (sk_px),a
+    ld a,(sk_y)
+    ld (sk_py),a
+skl_set:
+    ld (hl),d
+    pop hl
+    ld a,(sk_x)
+    inc a
+    ld (sk_x),a
+    jr skl_fc
+skl_rowend:
+    ld a,(sk_y)
+    inc a
+    ld (sk_y),a
+    jr skl_fr
+
+; ---- moves ------------------------------------------------------------------------------------------------------------------
+sk_input:
+    ld a,(gl_held)
+    and GK_L|GK_R|GK_U|GK_D
+    jr nz,ski_h
+    xor a
+    ld (sk_rep),a
+    ret
+ski_h:
+    ld b,a
+    ld a,(gl_press)
+    and GK_L|GK_R|GK_U|GK_D
+    jr nz,ski_first
+    ld a,(sk_rep)
+    dec a
+    ld (sk_rep),a
+    ret nz
+    ld a,3                      ; auto-repeat every 3 frames
+    ld (sk_rep),a
+    jr ski_dir
+ski_first:
+    ld a,8
+    ld (sk_rep),a
+ski_dir:
+    ld hl,$0000                 ; H = dy, L = dx
+    bit 0,b
+    jr z,ski_r
+    ld l,$FF
+    jr ski_go
+ski_r:
+    bit 1,b
+    jr z,ski_u
+    ld l,1
+    jr ski_go
+ski_u:
+    bit 2,b
+    jr z,ski_d
+    ld h,$FF
+    jr ski_go
+ski_d:
+    ld h,1
+ski_go:
+    ld a,l
+    ld (sk_dx),a
+    ld a,h
+    ld (sk_dy),a
+    ld a,(sk_px)                ; target cell
+    ld hl,sk_dx
+    add a,(hl)
+    ld (sk_x),a
+    ld a,(sk_py)
+    ld hl,sk_dy
+    add a,(hl)
+    ld (sk_y),a
+    call sk_cellptr
+    ld a,(hl)
+    bit 0,a
+    ret nz                      ; wall
+    bit 2,a
+    jr z,ski_walk
+    push hl                     ; a box: the cell behind it must be free
+    ld a,(sk_x)
+    ld hl,sk_dx
+    add a,(hl)
+    ld (sk_x),a
+    ld a,(sk_y)
+    ld hl,sk_dy
+    add a,(hl)
+    ld (sk_y),a
+    call sk_cellptr
+    ld a,(hl)
+    and 5                       ; wall or another box
+    jr z,ski_push
+    pop hl
+    ret
+ski_push:
+    push hl
+    call sk_save
+    pop hl                      ; HL = cell behind the box
+    set 2,(hl)
+    pop hl                      ; HL = the box's cell
+    res 2,(hl)
+    jr ski_step
+ski_walk:
+    call sk_save
+ski_step:
+    ld a,(sk_px)
+    ld hl,sk_dx
+    add a,(hl)
+    ld (sk_px),a
+    ld a,(sk_py)
+    ld hl,sk_dy
+    add a,(hl)
+    ld (sk_py),a
+    ld hl,(sk_moves)
+    inc hl
+    ld (sk_moves),hl
+    ld a,1
+    ld (sk_dirty),a
+    ret
+
+sk_save:                        ; snapshot for the one-step undo
+    ld a,(sk_px)
+    ld (sk_upx),a
+    ld a,(sk_py)
+    ld (sk_upy),a
+    ld hl,(sk_moves)
+    ld (sk_umv),hl
+    ld hl,sk_grid
+    ld de,sk_undo
+    ld bc,144
+    ldir
+    ld a,1
+    ld (sk_ucan),a
+    ret
+
+sk_undoit:
+    ld a,(sk_ucan)
+    or a
+    ret z
+    xor a
+    ld (sk_ucan),a
+    ld a,(sk_upx)
+    ld (sk_px),a
+    ld a,(sk_upy)
+    ld (sk_py),a
+    ld hl,(sk_umv)
+    ld (sk_moves),hl
+    ld hl,sk_undo
+    ld de,sk_grid
+    ld bc,144
+    ldir
+    ld a,1
+    ld (sk_dirty),a
+    ret
+
+sk_won:                         ; Z = every box is on a goal
+    ld hl,sk_grid
+    ld b,144
+skw_l:
+    ld a,(hl)
+    and 6
+    cp 4
+    jr nz,skw_n
+    or 1                        ; a box without a goal under it: NZ
+    ret
+skw_n:
+    inc hl
+    djnz skw_l
+    xor a                       ; Z
+    ret
+
+; ---- drawing -------------------------------------------------------------------------------------------------------------
+sk_render:
+    call S_GFX_CLEAR
+    ld hl,sk_l_lv
+    call gl_lang
+    ld b,0
+    ld c,1
+    call gl_text
+    ld a,(sk_lv)
+    inc a
+    ld l,a
+    ld h,0
+    ld b,4
+    ld c,1
+    call gl_num
+    ld hl,sk_l_mv
+    call gl_lang
+    ld b,9
+    ld c,1
+    call gl_text
+    ld hl,(sk_moves)
+    ld b,15
+    ld c,1
+    call gl_num
+    ld b,0
+    ld c,7
+    ld d,96
+    ld e,1
+    ld a,1
+    call gl_rect
+    xor a
+    ld (sk_y),a
+skr_row:
+    xor a
+    ld (sk_x),a
+skr_col:
+    call sk_cellptr
+    ld e,(hl)                   ; E = cell
+    ld a,(sk_x)                 ; pixel position: x * 6, 8 + y * 6
+    ld b,a
+    add a,a
+    add a,b
+    add a,a
+    ld b,a
+    ld a,(sk_y)
+    ld c,a
+    add a,a
+    add a,c
+    add a,a
+    add a,8
+    ld c,a
+    bit 0,e
+    jr z,skr_nw
+    ld d,6                      ; wall: solid with a groove
+    ld e,6
+    ld a,1
+    call gl_rect
+    inc b
+    inc c
+    inc c
+    ld d,4
+    ld e,1
+    xor a
+    call gl_rect
+    jr skr_pl
+skr_nw:
+    bit 2,e
+    jr z,skr_ng
+    bit 1,e
+    jr z,skr_box
+    ld d,6                      ; box on a goal: solid with a hole
+    ld e,6
+    ld a,1
+    call gl_rect
+    inc b
+    inc b
+    inc c
+    inc c
+    ld d,2
+    ld e,2
+    xor a
+    call gl_rect
+    jr skr_pl
+skr_box:
+    ld d,6                      ; box: hollow with a dot
+    ld e,6
+    call gl_box
+    inc b
+    inc b
+    inc c
+    inc c
+    ld d,2
+    ld e,2
+    ld a,1
+    call gl_rect
+    jr skr_pl
+skr_ng:
+    bit 1,e
+    jr z,skr_pl
+    inc b                       ; goal: a small dot
+    inc b
+    inc c
+    inc c
+    ld d,2
+    ld e,2
+    ld a,1
+    call gl_rect
+skr_pl:
+    ld a,(sk_x)
+    ld hl,sk_px
+    cp (hl)
+    jr nz,skr_next
+    ld a,(sk_y)
+    ld hl,sk_py
+    cp (hl)
+    jr nz,skr_next
+    ld a,(sk_x)                 ; the player (the cell origin is recomputed: B, C were moved above)
+    ld b,a
+    add a,a
+    add a,b
+    add a,a
+    ld b,a
+    ld a,(sk_y)
+    ld c,a
+    add a,a
+    add a,c
+    add a,a
+    add a,8
+    ld c,a
+    ld hl,sk_man
+    ld d,6
+    ld a,1
+    call gl_spr
+skr_next:
+    ld a,(sk_x)
+    inc a
+    ld (sk_x),a
+    cp 16
+    jp nz,skr_col
+    ld a,(sk_y)
+    inc a
+    ld (sk_y),a
+    cp 9
+    jp nz,skr_row
+    ret
+
+sk_man:   .db $30,$78,$30,$FC,$30,$48
+sk_l_lv:  .db "NIV",0,"LVL",0
+sk_l_mv:  .db "PASOS",0,"MOVES",0
+sk_t_ok:  .db "NIVEL LISTO!",0,"LEVEL CLEARED!",0
+sk_t_all: .db "TODOS LOS NIVELES!",0,"ALL LEVELS DONE!",0
+#include "games/sokoban_levels.inc"

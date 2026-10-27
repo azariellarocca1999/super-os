@@ -184,6 +184,8 @@ F_LINK      .equ 2
 F_LOWBAT    .equ 3
 F_RTCTICK   .equ 4
 F_WOKELINK  .equ 5
+F_CDIRTY    .equ 6              ; the contrast shortcut changed the trim: save it on the next other key
+F_LOCKREQ   .equ 7              ; the calculator just woke up: the launcher asks for the PIN when the lock is on
 
 ; event flags (v_evflags)
 EV_LINK     .equ $0001
@@ -214,8 +216,11 @@ s_sleepto   .equ SETTINGS+4 ; seconds of inactivity before deep sleep
 s_lang      .equ SETTINGS+5 ; 0 ES, 1 EN
 s_font      .equ SETTINGS+6 ; default font
 s_espsleep  .equ SETTINGS+7 ; ESP32 idle sleep timeout in 10 s units (18 = 180 s)
-s_sum       .equ SETTINGS+8
-SETTINGS_LEN .equ 9
+s_hisc      .equ SETTINGS+8 ; 10 x 16-bit best scores of the native games (journalled with the rest)
+s_pin       .equ SETTINGS+28 ; 16-bit: four BCD digits of the lock PIN
+s_lock      .equ SETTINGS+30 ; 0 off, 1 PIN after sleep / boot, 2 exam mode (PIN + games, AI and network apps closed)
+s_sum       .equ SETTINGS+31
+SETTINGS_LEN .equ 32            ; the journal record is 64 B: marker + 32 + checksum + padding
 
 ; ---- keyboard codes: row*8 + bit + 1 (identical to TI GetCSC) ------------------------------------
 K_NONE      .equ 0

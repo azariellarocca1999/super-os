@@ -16,7 +16,7 @@ GV = 0xA440
 def play(tag, item, script, dump="A400", dumplen=0x200):
     """Open GAMES item N, run `script` (list of ('key', name) / ('hold', name, ms) / ('wait', ms) / ('snap', name)), return (RAM dump, stdout)."""
     s = Session(tag, start=1500)
-    s.press("TRACE", "K%d" % item)
+    s.press("TRACE", *(["K%d" % item] if isinstance(item, int) else ["K" + k for k in item.split(",")]))   # "9,1" = key 9 then 1 (second page)
     s.t += 600
     for step in script:
         if step[0] == "key":
@@ -108,6 +108,28 @@ def run(check_fn=None):
     check("MINESWEEPER: the first reveal is safe and opens a region", m[0x42] == 1 and m[0x47] > 1, "(state=%d revealed=%d)" % (m[0x42], m[0x47]))
     check("MINESWEEPER: the field is drawn", lit("g_mns", "b", 8, 64) > 300, "(lit=%d)" % lit("g_mns", "b", 8, 64))
     check("MINESWEEPER: never resets the calculator", no_reset("g_mns", 7, [("wait", 400), ("key", "ENTER"), ("wait", 800), ("key", "ALPHA")]))
+
+    # ---- Sokoban: level 1 is  player (7,4), box (9,4), goal (5,5) ----
+    m, o = play("g_sok", 8, [("wait", 500), ("snap", "a"), ("key", "RIGHT"), ("wait", 300), ("snap", "b")])
+    check("SOKOBAN: walls, box, goal and the man are drawn", lit("g_sok", "a", 8, 64) > 200, "(lit=%d)" % lit("g_sok", "a", 8, 64))
+    check("SOKOBAN: RIGHT walks and pushes the box (player x 8, 1 move)", m[0x40] == 8 and m[0x43] == 1, "(px=%d moves=%d)" % (m[0x40], m[0x43]))
+    m, o = play("g_sok2", 8, [("wait", 500), ("key", "RIGHT"), ("wait", 300), ("key", "ALPHA"), ("wait", 300)])
+    check("SOKOBAN: ALPHA undoes the last move", m[0x40] == 7 and m[0x43] == 0, "(px=%d moves=%d)" % (m[0x40], m[0x43]))
+    sol = ["UP", "RIGHT", "RIGHT", "RIGHT", "DOWN", "LEFT", "LEFT", "LEFT", "LEFT", "UP", "LEFT", "DOWN"]
+    script = [("wait", 500)] + [x for k in sol for x in (("key", k), ("wait", 250))] + [("wait", 600), ("snap", "w")]
+    m, o = play("g_sok3", 8, script, dump="8700", dumplen=0x40)
+    check("SOKOBAN: solving level 1 stores 1 level cleared in the best-score slot (settings $8716)", m[0x16] == 1 and m[0x17] == 0, "(best=%d)" % m[0x16])
+    check("SOKOBAN: the level-cleared overlay is shown", lit("g_sok3", "w", 14, 50) > 100, "(lit=%d)" % lit("g_sok3", "w", 14, 50))
+    check("SOKOBAN: never resets the calculator", no_reset("g_sok", 8, [("wait", 500), ("key", "RIGHT"), ("wait", 300), ("key", "ENTER"), ("wait", 400)]))
+
+    # ---- Reversi: you place at (3,2), flipping (3,3); the CPU answers ----
+    m, o = play("g_rev", "9,1", [("wait", 500), ("snap", "a"), ("key", "ENTER"), ("wait", 2000), ("snap", "b")], dump="A900", dumplen=64)
+    check("REVERSI: board, discs and the legal-square dots are drawn", lit("g_rev", "a", 0, 64) > 250, "(lit=%d)" % lit("g_rev", "a"))
+    check("REVERSI: your disc lands on (3,2)", m[2 * 8 + 3] == 1, "(cell=%d)" % m[19])
+    check("REVERSI: the CPU answered (6 discs on the board)", sum(1 for v in m if v) == 6, "(discs=%d)" % sum(1 for v in m if v))
+    m, o = play("g_rev2", "9,1", [("wait", 500), ("key", "LEFT"), ("key", "LEFT"), ("key", "ENTER"), ("wait", 600)], dump="A900", dumplen=64)
+    check("REVERSI: an illegal square does nothing", sum(1 for v in m if v) == 4, "(discs=%d)" % sum(1 for v in m if v))
+    check("REVERSI: never resets the calculator", no_reset("g_rev", "9,1", [("wait", 500), ("key", "ENTER"), ("wait", 1500), ("key", "DOWN"), ("key", "ENTER"), ("wait", 1500)]))
 
     import check_flush
     check_flush.run(check)

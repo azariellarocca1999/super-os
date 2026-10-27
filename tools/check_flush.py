@@ -7,9 +7,11 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from uidrive import Session, parse_mem, pbm_text  # noqa: E402
 
-GAMES = {1: "TETRIS", 2: "SNAKE", 3: "BREAKOUT", 4: "PONG", 5: "2048", 6: "INVADERS", 7: "MINES"}
+GAMES = {1: "TETRIS", 2: "SNAKE", 3: "BREAKOUT", 4: "PONG", 5: "2048", 6: "INVADERS", 7: "MINES", 8: "SOKOBAN", 9: "REVERSI"}
 KEYSEQ = {1: ["LEFT", "ALPHA", "RIGHT", "UP", "ALPHA"], 2: ["DOWN", "LEFT"], 3: ["ENTER", "LEFT", "RIGHT"], 4: ["UP", "DOWN"],
-          5: ["LEFT", "UP", "RIGHT", "DOWN", "LEFT"], 6: ["ALPHA", "LEFT", "RIGHT"], 7: ["ENTER", "RIGHT", "ALPHA"]}
+          5: ["LEFT", "UP", "RIGHT", "DOWN", "LEFT"], 6: ["ALPHA", "LEFT", "RIGHT"], 7: ["ENTER", "RIGHT", "ALPHA"],
+          8: ["RIGHT", "LEFT", "ALPHA"], 9: ["RIGHT", "ENTER"]}
+PATH = {9: ["K9", "K1"]}                  # Reversi lives on the second page of the GAMES tab
 
 
 def fb_to_pixels(mem):
@@ -18,7 +20,7 @@ def fb_to_pixels(mem):
 
 def lcd_vs_buffer(item, before_pause_ms=2500):
     s = Session("cf", start=1500)
-    s.press("TRACE", "K%d" % item)
+    s.press("TRACE", *PATH.get(item, ["K%d" % item]))
     s.t += 600
     for k in KEYSEQ[item]:
         s.press(k)

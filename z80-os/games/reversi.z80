@@ -1,0 +1,636 @@
+; =============================================================================
+; REVERSI (native).  8 x 8 board against the calculator.  You play the solid discs and move first.
+;   arrows move the cursor, 2ND / ENTER place a disc (dots mark the legal squares), MODE / CLEAR pause.
+;   The CPU is greedy with a positional table (corners high, the squares next to them low).  Best = largest winning margin.
+; =============================================================================
+rv_cx       .equ GV+0
+rv_cy       .equ GV+1
+rv_pl       .equ GV+2           ; who moves in rv_try: 1 you, 2 CPU
+rv_do       .equ GV+3           ; 1 = really place the disc and flip, 0 = just count
+rv_x        .equ GV+4
+rv_y        .equ GV+5
+rv_dx       .equ GV+6
+rv_dy       .equ GV+7
+rv_d        .equ GV+8
+rv_n        .equ GV+9
+rv_tot      .equ GV+10
+rv_cx2      .equ GV+11
+rv_cy2      .equ GV+12
+rv_opp      .equ GV+13
+rv_sx       .equ GV+14
+rv_sy       .equ GV+15
+rv_bv       .equ GV+16
+rv_bx       .equ GV+17
+rv_by       .equ GV+18
+rv_c1       .equ GV+19
+rv_c2       .equ GV+20
+rv_dirty    .equ GV+21
+rv_over     .equ GV+22
+rv_rep      .equ GV+23
+rv_val      .equ GV+24
+rv_hint     .equ GV+25
+rv_board    .equ $A900          ; 64 cells: 0 empty, 1 you, 2 CPU
+
+game_reversi:
+    ld a,8
+    ld b,4
+    call gl_init
+rv_restart:
+    ld hl,rv_board
+    ld de,rv_board+1
+    ld bc,63
+    ld (hl),0
+    ldir
+    ld a,2
+    ld (rv_board+27),a
+    ld (rv_board+36),a
+    ld a,1
+    ld (rv_board+28),a
+    ld (rv_board+35),a
+    ld a,3
+    ld (rv_cx),a
+    ld a,2
+    ld (rv_cy),a
+    xor a
+    ld (rv_over),a
+    ld (rv_rep),a
+    inc a
+    ld (rv_dirty),a
+    ld (rv_hint),a
+rv_loop:
+    call gl_tick
+    ld a,(gl_press)
+    and GK_Q|GK_P
+    jr z,rv_nop
+    call gl_pause
+    jr c,rv_quit
+    ld a,1
+    ld (rv_dirty),a
+rv_nop:
+    call rv_cursor
+    ld a,(gl_press)
+    and GK_A
+    jr z,rv_chk
+    ld a,1
+    ld (rv_pl),a
+    ld (rv_do),a
+    ld a,(rv_cx)
+    ld (rv_x),a
+    ld a,(rv_cy)
+    ld (rv_y),a
+    call rv_try
+    or a
+    jr z,rv_chk                 ; not a legal square
+    xor a
+    ld (rv_hint),a
+    call rv_show
+    call rv_cputurn
+    ld a,1
+    ld (rv_hint),a
+    ld (rv_dirty),a
+rv_chk:
+    ld a,(rv_over)
+    or a
+    jr nz,rv_end
+    ld a,(rv_dirty)
+    or a
+    jr z,rv_loop
+    xor a
+    ld (rv_dirty),a
+    call rv_show
+    jr rv_loop
+rv_quit:
+    jp gl_exit
+rv_end:
+    xor a
+    ld (rv_hint),a
+    call rv_show
+    ld a,(rv_c1)                ; the render above counted the discs
+    ld hl,rv_c2
+    sub (hl)
+    jr c,rv_lose
+    jr z,rv_draw
+    ld l,a                      ; margin
+    ld h,0
+    call gl_hs_set
+    ld hl,rv_t_win
+    jr rv_res
+rv_lose:
+    ld hl,rv_t_lose
+    jr rv_res
+rv_draw:
+    ld hl,rv_t_draw
+rv_res:
+    call gl_result
+    jr c,rv_quit
+    jp rv_restart
+
+rv_show:
+    call rv_render
+    jp gl_flush
+
+rv_wait:                        ; about a third of a second, so the CPU's move can be followed
+    ld b,9
+rvw_l:
+    push bc
+    call gl_tick
+    pop bc
+    djnz rvw_l
+    ret
+
+; ---- turns -----------------------------------------------------------------------------------------------------------------
+rv_cputurn:
+rvt_cpu:
+    ld a,2
+    ld (rv_pl),a
+    call rv_has
+    jr z,rvt_nomove
+    call rv_wait
+    call rv_cpumove
+    call rv_show
+    ld a,1
+    ld (rv_pl),a
+    call rv_has
+    ret nz                      ; you can answer
+    jr rvt_cpu                  ; you must pass: the CPU plays again
+rvt_nomove:
+    ld a,1
+    ld (rv_pl),a
+    call rv_has
+    ret nz
+    ld a,1                      ; neither side can move
+    ld (rv_over),a
+    ret
+
+rv_cursor:
+    ld a,(gl_held)
+    and GK_L|GK_R|GK_U|GK_D
+    jr nz,rvc_h
+    xor a
+    ld (rv_rep),a
+    ret
+rvc_h:
+    ld b,a
+    ld a,(gl_press)
+    and GK_L|GK_R|GK_U|GK_D
+    jr nz,rvc_first
+    ld a,(rv_rep)
+    dec a
+    ld (rv_rep),a
+    ret nz
+    ld a,3
+    ld (rv_rep),a
+    jr rvc_move
+rvc_first:
+    ld a,8
+    ld (rv_rep),a
+rvc_move:
+    bit 0,b
+    jr z,rvc_r
+    ld a,(rv_cx)
+    dec a
+    and 7
+    ld (rv_cx),a
+rvc_r:
+    bit 1,b
+    jr z,rvc_u
+    ld a,(rv_cx)
+    inc a
+    and 7
+    ld (rv_cx),a
+rvc_u:
+    bit 2,b
+    jr z,rvc_d
+    ld a,(rv_cy)
+    dec a
+    and 7
+    ld (rv_cy),a
+rvc_d:
+    bit 3,b
+    jr z,rvc_done
+    ld a,(rv_cy)
+    inc a
+    and 7
+    ld (rv_cy),a
+rvc_done:
+    ld a,1
+    ld (rv_dirty),a
+    ret
+
+; ---- rules -----------------------------------------------------------------------------------------------------------------
+rv_at:                          ; B = x, C = y -> HL = &board[y * 8 + x]
+    ld a,c
+    rlca
+    rlca
+    rlca
+    add a,b
+    ld l,a
+    ld h,0
+    ld de,rv_board
+    add hl,de
+    ret
+
+rv_try:                         ; rv_x, rv_y, rv_pl, rv_do -> A = discs flipped (0 = not a legal square); with rv_do = 1 the move is made
+    ld a,(rv_x)
+    ld b,a
+    ld a,(rv_y)
+    ld c,a
+    call rv_at
+    ld a,(hl)
+    or a
+    jr z,rvt_free
+    xor a
+    ret
+rvt_free:
+    ld a,(rv_pl)
+    xor 3
+    ld (rv_opp),a
+    xor a
+    ld (rv_tot),a
+    ld (rv_d),a
+rvt_dir:
+    ld a,(rv_d)
+    add a,a
+    ld e,a
+    ld d,0
+    ld hl,rv_dirs
+    add hl,de
+    ld a,(hl)
+    ld (rv_dx),a
+    inc hl
+    ld a,(hl)
+    ld (rv_dy),a
+    ld a,(rv_x)
+    ld (rv_cx2),a
+    ld a,(rv_y)
+    ld (rv_cy2),a
+    xor a
+    ld (rv_n),a
+rvt_walk:
+    ld a,(rv_cx2)
+    ld hl,rv_dx
+    add a,(hl)
+    ld (rv_cx2),a
+    cp 8
+    jr nc,rvt_next              ; off the board (a negative step wraps to 248+)
+    ld a,(rv_cy2)
+    ld hl,rv_dy
+    add a,(hl)
+    ld (rv_cy2),a
+    cp 8
+    jr nc,rvt_next
+    ld a,(rv_cx2)
+    ld b,a
+    ld a,(rv_cy2)
+    ld c,a
+    call rv_at
+    ld a,(hl)
+    or a
+    jr z,rvt_next               ; a gap
+    ld hl,rv_opp
+    cp (hl)
+    jr nz,rvt_mine
+    ld a,(rv_n)
+    inc a
+    ld (rv_n),a
+    jr rvt_walk
+rvt_mine:
+    ld a,(rv_n)
+    or a
+    jr z,rvt_next
+    ld c,a
+    ld a,(rv_tot)
+    add a,c
+    ld (rv_tot),a
+    ld a,(rv_do)
+    or a
+    jr z,rvt_next
+rvt_flip:                       ; walk back over the n opposing discs and turn them
+    ld a,(rv_cx2)
+    ld hl,rv_dx
+    sub (hl)
+    ld (rv_cx2),a
+    ld a,(rv_cy2)
+    ld hl,rv_dy
+    sub (hl)
+    ld (rv_cy2),a
+    push bc
+    ld a,(rv_cx2)
+    ld b,a
+    ld a,(rv_cy2)
+    ld c,a
+    call rv_at
+    pop bc
+    ld a,(rv_pl)
+    ld (hl),a
+    dec c
+    jr nz,rvt_flip
+rvt_next:
+    ld a,(rv_d)
+    inc a
+    ld (rv_d),a
+    cp 8
+    jp nz,rvt_dir
+    ld a,(rv_tot)
+    or a
+    ret z
+    ld a,(rv_do)
+    or a
+    jr z,rvt_cnt
+    ld a,(rv_x)                 ; the new disc
+    ld b,a
+    ld a,(rv_y)
+    ld c,a
+    call rv_at
+    ld a,(rv_pl)
+    ld (hl),a
+rvt_cnt:
+    ld a,(rv_tot)
+    ret
+
+rv_has:                         ; rv_pl has a legal square?  NZ = yes, Z = no
+    xor a
+    ld (rv_do),a
+    ld (rv_sy),a
+rvh_y:
+    xor a
+    ld (rv_sx),a
+rvh_x:
+    ld a,(rv_sx)
+    ld (rv_x),a
+    ld a,(rv_sy)
+    ld (rv_y),a
+    call rv_try
+    or a
+    ret nz
+    ld a,(rv_sx)
+    inc a
+    ld (rv_sx),a
+    cp 8
+    jr nz,rvh_x
+    ld a,(rv_sy)
+    inc a
+    ld (rv_sy),a
+    cp 8
+    jr nz,rvh_y
+    xor a
+    ret
+
+rv_fold:                        ; A = 0..7 -> min(A, 7 - A)
+    cp 4
+    ret c
+    ld b,a
+    ld a,7
+    sub b
+    ret
+
+rv_cpumove:                     ; rv_pl = 2 and it has a move: the best square by flips and position
+    xor a
+    ld (rv_do),a
+    ld (rv_bv),a
+    ld (rv_sy),a
+rvm_y:
+    xor a
+    ld (rv_sx),a
+rvm_x:
+    ld a,(rv_sx)
+    ld (rv_x),a
+    ld a,(rv_sy)
+    ld (rv_y),a
+    call rv_try
+    or a
+    jr z,rvm_n
+    add a,a
+    ld (rv_val),a
+    ld a,(rv_sx)
+    call rv_fold
+    ld c,a
+    ld a,(rv_sy)
+    call rv_fold
+    add a,a
+    add a,a
+    add a,c
+    ld e,a
+    ld d,0
+    ld hl,rv_wt
+    add hl,de
+    ld a,(hl)
+    ld hl,rv_val
+    add a,(hl)
+    ld c,a
+    call gl_rnd                 ; a little noise so two games are not the same
+    and 3
+    add a,c
+    ld hl,rv_bv
+    cp (hl)
+    jr c,rvm_n
+    jr z,rvm_n
+    ld (hl),a
+    ld a,(rv_sx)
+    ld (rv_bx),a
+    ld a,(rv_sy)
+    ld (rv_by),a
+rvm_n:
+    ld a,(rv_sx)
+    inc a
+    ld (rv_sx),a
+    cp 8
+    jr nz,rvm_x
+    ld a,(rv_sy)
+    inc a
+    ld (rv_sy),a
+    cp 8
+    jr nz,rvm_y
+    ld a,(rv_bx)
+    ld (rv_x),a
+    ld a,(rv_by)
+    ld (rv_y),a
+    ld a,1
+    ld (rv_do),a
+    jp rv_try
+
+rv_count:                       ; -> rv_c1, rv_c2
+    ld bc,0
+    ld hl,rv_board
+    ld e,64
+rvn_l:
+    ld a,(hl)
+    inc hl
+    cp 1
+    jr nz,rvn_2
+    inc b
+    jr rvn_n
+rvn_2:
+    cp 2
+    jr nz,rvn_n
+    inc c
+rvn_n:
+    dec e
+    jr nz,rvn_l
+    ld a,b
+    ld (rv_c1),a
+    ld a,c
+    ld (rv_c2),a
+    ret
+
+; ---- drawing -----------------------------------------------------------------------------------------------------------------
+rv_px:                          ; A = cell index -> A = 7 * index
+    ld b,a
+    add a,a
+    add a,a
+    add a,a
+    sub b
+    ret
+
+rv_render:
+    call S_GFX_CLEAR
+    xor a
+    ld (rv_sx),a
+rvr_h:                          ; the grid: 9 lines each way, 7 px apart
+    ld a,(rv_sx)
+    call rv_px
+    add a,3
+    ld c,a
+    ld b,2
+    ld d,57
+    ld e,1
+    ld a,1
+    call gl_rect
+    ld a,(rv_sx)
+    call rv_px
+    add a,2
+    ld b,a
+    ld c,3
+    ld d,1
+    ld e,57
+    ld a,1
+    call gl_rect
+    ld a,(rv_sx)
+    inc a
+    ld (rv_sx),a
+    cp 9
+    jr nz,rvr_h
+    xor a
+    ld (rv_sy),a
+rvr_row:
+    xor a
+    ld (rv_sx),a
+rvr_col:
+    ld a,(rv_sy)                ; (rv_px clobbers B, so the row goes first)
+    call rv_px
+    add a,4
+    ld c,a
+    ld a,(rv_sx)
+    call rv_px
+    add a,3
+    ld b,a
+    push bc
+    ld a,(rv_sx)
+    ld b,a
+    ld a,(rv_sy)
+    ld c,a
+    call rv_at
+    ld a,(hl)
+    pop bc
+    or a
+    jr z,rvr_empty
+    ld hl,rv_ring
+    cp 2
+    jr z,rvr_sp
+    ld hl,rv_disc
+rvr_sp:
+    ld d,5
+    ld a,1
+    call gl_spr
+    jr rvr_next
+rvr_empty:
+    ld a,(rv_hint)
+    or a
+    jr z,rvr_next
+    push bc                     ; a dot on every square you may play
+    ld a,(rv_sx)
+    ld (rv_x),a
+    ld a,(rv_sy)
+    ld (rv_y),a
+    ld a,1
+    ld (rv_pl),a
+    xor a
+    ld (rv_do),a
+    call rv_try
+    pop bc
+    or a
+    jr z,rvr_next
+    inc b
+    inc b
+    inc c
+    inc c
+    ld d,1
+    ld e,1
+    ld a,1
+    call gl_rect
+rvr_next:
+    ld a,(rv_sx)
+    inc a
+    ld (rv_sx),a
+    cp 8
+    jr nz,rvr_col
+    ld a,(rv_sy)
+    inc a
+    ld (rv_sy),a
+    cp 8
+    jr nz,rvr_row
+    ld a,(rv_cy)                ; the cursor inverts its square
+    call rv_px
+    add a,4
+    ld c,a
+    ld a,(rv_cx)
+    call rv_px
+    add a,3
+    ld b,a
+    ld d,6
+    ld e,6
+    ld a,2
+    call gl_rect
+    call rv_count               ; side panel
+    ld hl,rv_l_you
+    call gl_lang
+    ld b,16
+    ld c,6
+    call gl_text
+    ld a,(rv_c1)
+    ld l,a
+    ld h,0
+    ld b,20
+    ld c,6
+    call gl_num
+    ld hl,rv_l_cpu
+    ld b,16
+    ld c,14
+    call gl_text
+    ld a,(rv_c2)
+    ld l,a
+    ld h,0
+    ld b,20
+    ld c,14
+    call gl_num
+    ld hl,rv_l_k1
+    ld b,16
+    ld c,40
+    call gl_text
+    ld hl,rv_l_k2
+    call gl_lang
+    ld b,16
+    ld c,46
+    jp gl_text
+
+rv_dirs:  .db 1,0, $FF,0, 0,1, 0,$FF, 1,1, 1,$FF, $FF,1, $FF,$FF
+rv_wt:    .db 120,8,60,50, 8,2,20,20, 60,20,40,35, 50,20,35,30     ; by distance from the nearest edge (corner = 0,0)
+rv_disc:  .db $70,$F8,$F8,$F8,$70
+rv_ring:  .db $70,$88,$88,$88,$70
+rv_l_you: .db "TU",0,"YOU",0
+rv_l_cpu: .db "CPU",0
+rv_l_k1:  .db "2ND",0
+rv_l_k2:  .db "PONER",0,"PLACE",0
+rv_t_win: .db "GANASTE!",0,"YOU WIN!",0
+rv_t_lose: .db "PERDISTE",0,"YOU LOSE",0
+rv_t_draw: .db "EMPATE",0,"DRAW",0

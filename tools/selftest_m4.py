@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Milestone 4 checks on the headless emulator: CHIP-8 game packs on the Z80, streamed games over the SuperLink turbo byte layer.
 Called from selftest.py (shared results list); `python tools/selftest_m4.py` runs only this part."""
 import os
@@ -57,7 +57,7 @@ def run(check_fn=None):
         check = check_fn
     print("== 21. Milestone 4: CHIP-8 game packs on the Z80 (ARCADE / ACTION tabs of the GAMES launcher)")
     s = Session("m4pong", start=1500)
-    s.press("TRACE", "K8")
+    s.press("TRACE", "K9", "K2")
     s.snap("menu", wait=400)
     s.press("ENTER")
     s.snap("p1", wait=1500)
@@ -75,7 +75,7 @@ def run(check_fn=None):
     s.png("p1", 4)
 
     s = Session("m4inv", start=1500)
-    s.press("TRACE", "K8")                                   # CLASSIC menu: PONG BREAKOUT SNAKE INVADERS DODGE SIMON
+    s.press("TRACE", "K9", "K2")                                   # CLASSIC menu: PONG BREAKOUT SNAKE INVADERS DODGE SIMON
     s.press("DOWN", "DOWN", "DOWN", "ENTER")                 # INVADERS
     s.snap("i1", wait=1500)
     hold(s, "K6", 1200)                                      # chip 6 = right
@@ -89,7 +89,7 @@ def run(check_fn=None):
     print("== 22. Milestone 4: streamed games - turbo byte layer, delta frames, maze 3D and Game Boy (Peanut-GB) rendered on the ESP32")
     fresh_log()
     s = Session("m4maze", start=1500)
-    s.press("TRACE", "K9")
+    s.press("TRACE", "K9", "K3")
     s.snap("list", wait=3200)                                # wake the ESP32, list the titles
     s.press("ENTER")
     s.snap("g1", wait=2500)
@@ -113,7 +113,7 @@ def run(check_fn=None):
 
     fresh_log()
     s = Session("m4gb", start=1500)
-    s.press("TRACE", "K9")
+    s.press("TRACE", "K9", "K3")
     s.t += 3200
     s.press("DOWN", "ENTER")                                 # DMG-ACID2 through Peanut-GB on the ESP32
     s.snap("gb", wait=5000)

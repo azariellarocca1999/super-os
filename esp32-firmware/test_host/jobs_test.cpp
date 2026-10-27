@@ -56,7 +56,7 @@ int main() {
     task.join();
   }
   printf("== job ownership protocol, %d jobs (%d finished first, %d abandoned by the waiter)\n", N, finished, abandoned);
-  check("both orders were exercised", finished > 100 && abandoned > 100);
+  check("both orders were exercised", finished > 10 && abandoned > 10);   // coverage only: the split depends on how loaded the machine is
   check("no job leaked (every job freed by exactly one owner)", alive.load() == 0);
   bool once = true;
   for (int i = 0; i < N; i++) once = once && fr[i].load() == 1;

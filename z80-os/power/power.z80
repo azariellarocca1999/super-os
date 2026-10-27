@@ -238,6 +238,8 @@ power_sleep_h:
     call lcd_cmd
     call power_apply
     call lcd_blit
+    ld hl,v_flags
+    set F_LOCKREQ,(hl)          ; the launcher asks for the PIN (when the lock is on) before it takes the next key
     xor a
     ld (v_idle),a
     ld hl,(v_sleeps)

@@ -552,6 +552,8 @@ def main():
         selftest_noesp.run(check)
         import selftest_games
         selftest_games.run(check)
+        import selftest_lock
+        selftest_lock.run(check)
         import selftest_review
         selftest_review.run(check)
     print()

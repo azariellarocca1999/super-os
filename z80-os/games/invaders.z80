@@ -1,4 +1,4 @@
-; =============================================================================
+﻿; =============================================================================
 ; SPACE INVADERS (native).  4 rows x 8 aliens that speed up as they die, three destructible bunkers, a bonus ship, three lives, endless waves.
 ;   LEFT / RIGHT move, 2ND / ENTER / ALPHA / UP fire (one shot at a time), MODE / CLEAR pause.
 ; =============================================================================
@@ -6,7 +6,7 @@ iv_ox       .equ GV+0           ; formation origin
 iv_oy       .equ GV+1
 iv_dir      .equ GV+2           ; +2 / -2
 iv_frame    .equ GV+3           ; sprite animation frame
-iv_cnt      .equ GV+4
+iv_cnt      .equ GV+116         ; (kept out of the hashed state block GV+0..GV+99: it changes every frame)
 iv_int      .equ GV+5           ; frames between formation steps
 iv_n        .equ GV+6           ; aliens alive
 iv_px       .equ GV+7           ; ship x
@@ -18,12 +18,12 @@ iv_wave     .equ GV+13
 iv_ux       .equ GV+14          ; bonus ship x
 iv_uact     .equ GV+15
 iv_hit      .equ GV+16          ; frames left of the "ship hit" pause
-iv_tx       .equ GV+17          ; scratch
-iv_ty       .equ GV+18
-iv_lc       .equ GV+19
-iv_rc       .equ GV+20
-iv_row      .equ GV+21
-iv_col      .equ GV+22
+iv_tx       .equ GV+110          ; scratch
+iv_ty       .equ GV+111
+iv_lc       .equ GV+112
+iv_rc       .equ GV+113
+iv_row      .equ GV+114
+iv_col      .equ GV+115
 iv_ab       .equ GV+24          ; 3 alien bullets: x, y (y = 0: none)
 iv_alive    .equ GV+32          ; 32 bytes, row-major
 iv_bun      .equ GV+64          ; 3 bunkers x (6 left bytes + 6 right bytes)
@@ -82,6 +82,10 @@ iv_wavedone:
     call iv_bunkers
     call iv_newwave
 iv_draw:
+    ld hl,GV                    ; nothing moved this frame (formation between steps, no shot in flight): no redraw, no LCD traffic
+    ld b,100
+    call gl_changed
+    jr z,iv_loop
     call iv_render
     call gl_flush
     jr iv_loop

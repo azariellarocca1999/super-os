@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """English-language contact sheet of the main screens (to eyeball overflow): build/test/lang_en.png.   python tools/screens_lang.py"""
 import os
 import sys
@@ -25,7 +25,7 @@ def shot(tag, keys, wait=500, lang=True):
 
 for name, keys in (
         ("home", []), ("mate", ["WINDOW"]), ("ia", ["ZOOM"]), ("games", ["TRACE"]), ("sys", ["GRAPH"]),
-        ("diag", ["GRAPH", "K7"]), ("ota", ["GRAPH", "K6"]), ("classic", ["TRACE", "K8"]),
+        ("diag", ["GRAPH", "K7"]), ("ota", ["GRAPH", "K6"]), ("classic", ["TRACE", "K9", "K2"]),
         ("tetris_over", ["TRACE", "K1"]), ("pause", ["TRACE", "K3", "MODE"]), ("settings", ["YEQ", "K6"]), ("conv", ["WINDOW", "K6"])):
     shot("lang_" + name, keys, wait=900 if name in ("tetris_over", "pause") else 500)
 w, h = shots[0].size

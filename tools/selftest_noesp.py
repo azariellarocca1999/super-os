@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Base-system checks with NO ESP32 attached (floating link lines): every app that needs the co-processor must fail with a clear message,
 must never freeze the UI, and CLEAR must cancel the wait.  Called from selftest.py; `python tools/selftest_noesp.py` runs only this part."""
 import os
@@ -19,7 +19,7 @@ APPS = {
     "Super-CAS": ("WINDOW", "K3", ["K2"], True),
     "WiFi scan": ("ZOOM", "K4", ["K1"], False),
     "OTA PC packages": ("ZOOM", "K5", ["K1"], False),
-    "STREAM 3D": ("TRACE", "K9", [], False),
+    "STREAM 3D": ("TRACE>K9", "K3", [], False),
 }
 
 
@@ -41,7 +41,7 @@ def run(check_fn=None):
     for name, (tab, item, extra, enter) in APPS.items():
         tag = "noesp_" + name.replace(" ", "_").replace("-", "_")
         s = Session(tag, start=1500)
-        s.press(tab)
+        s.press(*tab.split(">"))                      # "TRACE>K9" = the tab key, then the key of the second page
         s.snap("home", wait=300)                      # the launcher of that tab (reference for "back at the launcher")
         s.press(item)
         s.press(*extra)
@@ -64,15 +64,15 @@ def run(check_fn=None):
             lit_rows(tag, "c3", 56, 64) == lit_rows(tag, "home", 56, 64)
         check("%s: CLEAR returns to the launcher" % name, back)
     # tour: open every launcher entry (except SLEEP), press CLEAR a few times: the launcher must come back every time
-    tabs = (("YEQ", 9, (7,)), ("WINDOW", 7, ()), ("ZOOM", 6, ()), ("TRACE", 9, ()), ("GRAPH", 7, (4,)))
+    tabs = (("YEQ", 9, (7,)), ("WINDOW", 8, ()), ("ZOOM", 6, ()), ("TRACE", 9, (9,)), ("TRACE>K9", 4, (4,)), ("GRAPH", 8, (4,)))   # 9 = MORE and 4 = BACK flip the page
     bad = []
     for tab, count, skip in tabs:
         for i in range(1, count + 1):
             if i in skip:
                 continue
-            tag = "tour_%s_%d" % (tab, i)
+            tag = "tour_%s_%d" % (tab.replace(">", "_"), i)
             s = Session(tag, start=1500)
-            s.press(tab)
+            s.press(*tab.split(">"))
             s.snap("home", wait=300)
             s.press("K%d" % i)
             s.snap("open", wait=900)

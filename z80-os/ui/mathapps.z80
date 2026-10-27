@@ -57,6 +57,24 @@ app_invad:
 app_mines:
     ld ix,GAME_MINES
     jr app_games
+app_sokoban:
+    ld ix,GAME_SOKOBAN
+    jr app_games
+app_reversi:
+    ld ix,GAME_REVERSI
+    jr app_games
+app_more:                       ; the GAMES tab has a second page
+    ld a,5
+    ld (v_tab),a
+    xor a
+    ld (v_sel),a
+    ret
+app_back:
+    ld a,3
+    ld (v_tab),a
+    xor a
+    ld (v_sel),a
+    ret
 app_classic:
     ld ix,PACK_ALL
     jr app_games

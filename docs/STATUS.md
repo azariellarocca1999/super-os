@@ -10,7 +10,8 @@ below is verified **in the emulator only** unless it says otherwise. The ESP32 f
 4. The CHIP-8 interpreter showed half-drawn frames (burst limit in the middle of a frame); the CHIP-8 Pong AI could not reach the ball; a label and an `.equ` with the same name sent a jump into RAM.
 
 ## What is new since the first hardware contact
-* **Seven native games** (`z80-os/games/`: Tetris, Snake, Breakout, Pong, 2048, Space Invaders, Minesweeper) on a shared library with a tile-based LCD flush; the six CHIP-8 classics stay in a merged menu. `docs/GAMES.md`.
+* **Nine native games** (`z80-os/games/`: Tetris, Snake, Breakout, Pong, 2048, Space Invaders, Minesweeper, Sokoban, Reversi) on a shared library with a tile-based LCD flush and best scores in the flash journal; the six CHIP-8 classics stay in a second-page menu. `docs/GAMES.md`.
+* **Added in 0.6**: PIN lock + exam mode, notepad, live contrast shortcut, persistent scores (fixing an old bug that stored `id*2` instead of the score), journal records 64 B (the first boot of this version starts from default settings), Invaders skips redraws when nothing moved (CPU idle 61 % -> 86 %). All of it is emulator-only: **not tested on the unit**. Comparison with other custom OSes: `docs/FEATURES.md`.
 * **Tools that catch what the emulator cannot**: crash trail (`REINICIO PC= SP=` after an unexpected restart), DIAGNOSTICS `7 TIMING`, `tools/check_labels.py`, `tools/audit_text.py`, `tools/z80dis.py` (disassembler + boot tracer), the bring-up build with a progress bar and contrast sweep.
 * A GitHub-ready repository: MIT license, `docs/INSTALL.md`, `docs/GAMES.md`, `CONTRIBUTING.md`, issue template for hardware reports.
 
@@ -19,7 +20,7 @@ Everything after the boot screen (keyboard fix, games, diagnostics, calculator, 
 
 | Check | Count | How to run |
 |---|---|---|
-| Emulator self-test (TI-83 Plus SE core + virtual ESP32) | **165 checks** (UI, link, OTA, calculator, CAS client, games, no-ESP32 behaviour, fault injection, 33 for the native games) | `python tools\selftest.py` (`--m3` = only the milestone 3 UI part, `python tools\selftest_m4.py` = only milestone 4, `python tools\selftest_noesp.py` = only the no-ESP32 part) |
+| Emulator self-test (TI-83 Plus SE core + virtual ESP32) | **191 checks** (UI, link, OTA, calculator, CAS client, games, lock / notes, no-ESP32 behaviour, fault injection, 46 for the native games and 13 for lock / notes / contrast) | `python tools\selftest.py` (`--m3` = only the milestone 3 UI part, `python tools\selftest_m4.py` = only milestone 4, `python tools\selftest_noesp.py` = only the no-ESP32 part) |
 | Signed `.8xu`: structure, pages, checksums, untouched factory pages, **RSA signature math (key 04)**, boot entry bytes | 22 checks | `python tools\verify_8xu.py` (also run by `2_build_all.ps1`) |
 | Z80 floating point library vs Python | **324 cases** | `python tools\mathtest.py` |
 | Super-CAS (same C++ as the firmware, host build) | **212 checks** | `python cas\cas_tests.py` |

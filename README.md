@@ -4,14 +4,15 @@
 
 [Español](README.es.md) · [Install it](docs/INSTALL.md) · [Games](docs/GAMES.md) · [Manual](docs/MANUAL.md) · [Status and honesty](docs/STATUS.md)
 
-![The seven native games](docs/screens/games.png)
+![The native games](docs/screens/games.png)
 
 > **Honest status.** Super-OS is **alpha**. It was written and tested in an emulator, and on 2026-10-26 it booted on a real TI-83+ SE (boot code 1.00, OS 1.19) for the first time. Everything past "it boots and shows the home screen" was verified in the emulator only; the real-hardware reports that came in right after boot (keyboard timing, games) were fixed in this release but **not yet re-tested on the unit**. The ESP32 firmware has never run on a chip. Installing an OS can leave a calculator unusable until you reinstall the official one: read [docs/INSTALL.md](docs/INSTALL.md) first, including "the way back".
 
 ## What is in it
 
 * **A real operating system**: preemptive kernel (idle, UI, power and link tasks), 96x64 UI with two fonts, ES / EN, three battery profiles, deep sleep, a real-time clock, flash-journaled settings, a package store with over-the-air installs, hardware diagnostics (LCD, keyboard, RAM, flash, timing, link).
-* **Seven native games**, full screen, with high scores, pause and sleep handling: **Tetris, Snake, Breakout, Pong, 2048, Space Invaders, Minesweeper** ([guide](docs/GAMES.md)), plus six CHIP-8 classics running in a CHIP-8 interpreter.
+* **Nine native games**, full screen, with pause, sleep handling and **best scores kept in flash**: **Tetris, Snake, Breakout, Pong, 2048, Space Invaders, Minesweeper, Sokoban (8 proven-solvable levels), Reversi (against the calculator)** ([guide](docs/GAMES.md)), plus six CHIP-8 classics running in a CHIP-8 interpreter.
+* **Everyday extras**: PIN lock after sleep and **exam mode** (calculator only: games, AI and network apps closed), a four-note **notepad**, live contrast shortcut (`+` / `-` on the launcher). How it compares with KnightOS and Doors CS: [docs/FEATURES.md](docs/FEATURES.md).
 * **Scientific tools**: a 32-bit-mantissa floating-point library, a TI-style calculator with a MATH menu, a 2D grapher (trace, table, zoom), unit converter (84 units), periodic table (118 elements), 49 physical constants.
 * **With the ESP32-S3** (optional): DeepSeek chat and step-by-step R1 explanations, **Super-CAS** (symbolic algebra: derivatives, integrals, limits, equations, matrices, 3D plots), Wikipedia, weather, and games streamed from the ESP32 (a ray-casting maze, Game Boy through [Peanut-GB](https://github.com/deltabeard/Peanut-GB)) over a calculator-clocked "turbo" link. Everything works without it; the apps that need it say so and CLEAR cancels the wait.
 * **Careful engineering**: 130+ automated emulator checks, a Z80-vs-Python reference for the float library (324 cases) and the CHIP-8 interpreter, 212 CAS checks, fault injection on the link, a verifier for the signed `.8xu`, a duplicate-label check, a text-overflow audit.
@@ -54,6 +55,7 @@ scripts/          install toolchains, build + test, run
 |---|---|
 | [docs/INSTALL.md](docs/INSTALL.md) | flashing, the way back, what to check first |
 | [docs/GAMES.md](docs/GAMES.md) | the games, controls, scoring |
+| [docs/FEATURES.md](docs/FEATURES.md) | what Super-OS has next to KnightOS / Doors CS, and what is missing |
 | [docs/MANUAL.md](docs/MANUAL.md) | short user manual (EN / ES) |
 | [docs/STATUS.md](docs/STATUS.md) | what is verified, what is not |
 | [docs/REVIEW.md](docs/REVIEW.md) | the critical review, including every bug found on real hardware |

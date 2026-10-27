@@ -26,4 +26,4 @@ def gen(src_path, start, end, dst, width):
 
 gen(("z80-os", "math", "page3.z80"), "M_JT:", "M_JT_END:", "mathjt.inc", 14)
 gen(("z80-os", "apps", "page4.z80"), "P4_JT:", "P4_JT_END:", "p4jt.inc", 16)
-gen(("z80-os", "games", "page5.z80"), "P5_JT:", "P5_JT_END:", "p5jt.inc", 16)
+gen(("z80-os", "games", "page5.z80"), "P5_JT:", "P5_JT_END:", "p5jt.inc", 16)   # also GAME_SOKOBAN / GAME_REVERSI

@@ -1,18 +1,18 @@
 ; ---- home: status bar, tabs F1-F5, numbered launcher 1-9 -----------------------------------------------
 ; item (5 bytes): .dw name STR id, .dw handler, .db milestone     terminator: .dw $FFFF
-tab_tables: .dw tab0,tab1,tab2,tab3,tab4
+tab_tables: .dw tab0,tab1,tab2,tab3,tab4,tab5
 
 tab0:
     .dw STR_APP_CHAT,app_chat
-    .db 0
+    .db $80
     .dw STR_APP_WIKI,app_wiki
-    .db 0
+    .db $80
     .dw STR_APP_CLOCK,app_clock
     .db 0
     .dw STR_APP_DASH,app_dash
     .db 0
     .dw STR_APP_WIFI,app_wifi
-    .db 0
+    .db $80
     .dw STR_APP_SET,app_settings
     .db 0
     .dw STR_APP_SLEEP,app_sleep
@@ -28,48 +28,50 @@ tab1:
     .dw STR_APP_GRAPH,app_graph
     .db 0
     .dw STR_APP_CAS,app_cas
-    .db 0
+    .db $80
     .dw STR_APP_STEP,app_step
-    .db 0
+    .db $80
     .dw STR_APP_PTABLE,app_ptable
     .db 0
     .dw STR_APP_CONV,app_conv
     .db 0
     .dw STR_APP_CONST,app_const
     .db 0
+    .dw STR_APP_NOTES,app_notes
+    .db 0
     .dw $FFFF
 tab2:
     .dw STR_APP_CHAT,app_chat
-    .db 0
+    .db $80
     .dw STR_APP_STEP,app_step
-    .db 0
+    .db $80
     .dw STR_APP_WIKI,app_wiki
-    .db 0
+    .db $80
     .dw STR_APP_WIFI,app_wifi
-    .db 0
+    .db $80
     .dw STR_APP_OTA,app_ota
-    .db 0
+    .db $80
     .dw STR_APP_WEATHER,app_weather
-    .db 0
+    .db $80
     .dw $FFFF
 tab3:
     .dw STR_APP_TETRIS,app_tetris
-    .db 0
+    .db $80
     .dw STR_APP_SNAKE,app_snake
-    .db 0
+    .db $80
     .dw STR_APP_BREAK,app_break
-    .db 0
+    .db $80
     .dw STR_APP_PONG,app_pong
-    .db 0
+    .db $80
     .dw STR_APP_2048,app_2048
-    .db 0
+    .db $80
     .dw STR_APP_INVAD,app_invad
-    .db 0
+    .db $80
     .dw STR_APP_MINES,app_mines
-    .db 0
-    .dw STR_APP_CLASSIC,app_classic
-    .db 0
-    .dw STR_APP_PACKC,app_packc
+    .db $80
+    .dw STR_APP_SOKOBAN,app_sokoban
+    .db $80
+    .dw STR_APP_MORE,app_more
     .db 0
     .dw $FFFF
 tab4:
@@ -84,8 +86,20 @@ tab4:
     .dw STR_APP_INFO,app_info
     .db 0
     .dw STR_APP_OTA,app_ota
-    .db 0
+    .db $80
     .dw STR_APP_DIAG,app_diag
+    .db 0
+    .dw STR_APP_LOCK,app_lock
+    .db 0
+    .dw $FFFF
+tab5:                           ; second page of GAMES (F4 again or item 9 on the first page)
+    .dw STR_APP_REVERSI,app_reversi
+    .db $80
+    .dw STR_APP_CLASSIC,app_classic
+    .db $80
+    .dw STR_APP_PACKC,app_packc
+    .db $80
+    .dw STR_APP_BACK,app_back
     .db 0
     .dw $FFFF
 
@@ -164,6 +178,10 @@ home_draw_done:
     add a,b
     ld b,a                      ; col = tab * 5
     ld a,(v_tab)
+    cp 5
+    jr nz,home_draw_tn
+    ld a,3                      ; page 2 of GAMES lights the GAME tab
+home_draw_tn:
     ld c,a
     ld a,(v_row)
     cp c
@@ -261,6 +279,29 @@ home_loop:
     call S_LCD_BLIT
     call S_WAIT_KEY
     ld b,a
+    ld hl,v_flags
+    bit F_LOCKREQ,(hl)
+    jr z,home_unlocked
+    res F_LOCKREQ,(hl)          ; just woke up: with the lock on, the PIN comes before anything else (the key that woke us is dropped)
+    ld a,(s_lock)
+    or a
+    jr z,home_unlocked
+    call ui_unlock
+    jp home_loop
+home_unlocked:
+    ld a,b
+    cp K_PLUS                   ; + / -: contrast trim, live; written to the flash journal on the next other key
+    jr z,home_cup
+    cp K_MINUS
+    jr z,home_cdn
+    ld hl,v_flags
+    bit F_CDIRTY,(hl)
+    jr z,home_nodirty
+    res F_CDIRTY,(hl)
+    push bc
+    call S_SETTINGS_SAVE
+    pop bc
+home_nodirty:
     ld hl,home_fkeys            ; F1..F5 select a tab
     ld c,0
 home_fk:
@@ -278,14 +319,14 @@ home_dg:
     ld a,(hl)
     inc hl
     cp b
-    jr z,home_open_c
+    jp z,home_open_c
     inc c
     ld a,c
     cp 9
     jr c,home_dg
     ld a,b
     cp K_ENTER
-    jr z,home_open_sel
+    jp z,home_open_sel
     cp K_DOWN
     jr z,home_down
     cp K_UP
@@ -295,37 +336,63 @@ home_dg:
     cp K_LEFT
     jr z,home_left
     jr home_loop
+home_cup:
+    ld a,(s_cadj)
+    cp 15
+    jr nc,home_cdone
+    inc a
+    jr home_cset
+home_cdn:
+    ld a,(s_cadj)
+    or a
+    jr z,home_cdone
+    dec a
+home_cset:
+    ld (s_cadj),a
+    ld hl,v_flags
+    set F_CDIRTY,(hl)
+    call S_POWER_APPLY
+home_cdone:
+    jp home_loop
 home_settab:
     ld a,c
+    cp 3
+    jr nz,home_st_set
+    ld a,(v_tab)                ; F4 on the GAMES tab flips between its two pages
+    cp 3
+    ld a,5
+    jr z,home_st_set
+    ld a,3
+home_st_set:
     ld (v_tab),a
     xor a
     ld (v_sel),a
-    jr home_loop
+    jp home_loop
 home_up:
     ld a,(v_sel)
     or a
-    jr z,home_loop
+    jp z,home_loop
     dec a
     ld (v_sel),a
-    jr home_loop
+    jp home_loop
 home_down:
     call home_count
     ld b,a
     ld a,(v_sel)
     inc a
     cp b
-    jr nc,home_loop
+    jp nc,home_loop
     ld (v_sel),a
-    jr home_loop
+    jp home_loop
 home_right:
     call home_count
     ld b,a
     ld a,(v_sel)
     add a,5
     cp b
-    jr nc,home_loop
+    jp nc,home_loop
     ld (v_sel),a
-    jr home_loop
+    jp home_loop
 home_left:
     ld a,(v_sel)
     sub 5
@@ -354,6 +421,15 @@ home_open_s:
     add ix,de
     djnz home_open_s
 home_open_go:
+    bit 7,(ix+4)                ; flag: games, AI and network apps are closed in exam mode
+    jr z,home_open_ok
+    ld a,(s_lock)
+    cp 2
+    jr nz,home_open_ok
+    ld hl,STR_EXAM_BLK
+    call ui_message
+    jp home_loop
+home_open_ok:
     ld e,(ix+0)
     ld d,(ix+1)                 ; DE = name id
     ld a,(ix+4)                 ; A = milestone (for app_pending)

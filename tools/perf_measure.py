@@ -24,6 +24,8 @@ SCEN = {
     "native 2048 waiting": ["TRACE", "K5"],
     "native INVADERS playing": ["TRACE", "K6"],
     "native MINESWEEPER waiting": ["TRACE", "K7"],
+    "native SOKOBAN waiting": ["TRACE", "K8"],
+    "native REVERSI waiting": ["TRACE", "K9", "K1"],
 }
 
 

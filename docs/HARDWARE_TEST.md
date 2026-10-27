@@ -59,7 +59,13 @@ If the install is refused, the unit shows `Waiting... Please install operating s
 
 ## 5. Games (F4 tab): no ESP32 needed
 
-Native games, `1` to `7` (Tetris, Snake, Breakout, Pong, 2048, Invaders, Minesweeper): each must start, answer the arrows / `2ND` / `ALPHA`, pause with `MODE` and leave with `CLEAR` `CLEAR`. Look for: flicker, missing pixels (the LCD is updated tile by tile), keys that need two presses, speeds that feel wrong, anything that restarts the calculator. Score of each game is kept while the calculator has power.
+Native games, `1` to `8` (Tetris, Snake, Breakout, Pong, 2048, Invaders, Minesweeper, Sokoban) and, on the second page (`9` or `F4` again), Reversi: each must start, answer the arrows / `2ND` / `ALPHA`, pause with `MODE` and leave with `CLEAR` `CLEAR`. Look for: flicker, missing pixels (the LCD is updated tile by tile), keys that need two presses, speeds that feel wrong, anything that restarts the calculator. Best scores are kept in the settings (flash journal): beat one, pull a battery for 10 s, reinsert, and the record must still be there.
+
+## 5c. Lock, exam mode, notes, contrast shortcut
+
+* `+` / `-` on the launcher change the contrast at once; after the next other key the value survives a battery pull.
+* `F5`, `8 LOCK`: `1` set a PIN twice, then `2ND+ON` (sleep) and wake: the PIN screen must come before anything else, a wrong PIN is refused. `2` exam mode: games, AI and network entries answer `MODO EXAMEN: CERRADO`. `3` turns it off. Test the way out **before** relying on it: there is no back door (a forgotten PIN = reinstall the OS).
+* `F2`, `8 NOTES`: write a note, leave, reopen it (the text must be there), sleep and wake, erase it with `DEL` then its number.
 
 ## 5b. CHIP-8 classics (F4 `8`): no ESP32 needed
 

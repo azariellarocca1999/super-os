@@ -1,0 +1,217 @@
+; =============================================================================
+; Notepad: four notes of up to 90 characters in RAM page 7 ($C000 window), written with the normal text editor.
+;   Battery-backed RAM: they survive sleep and restarts, not a battery change (the RAM test in DIAGNOSTICS overwrites them).
+;   Page 7: $C000 'N','T' marker, slots at $C010 + 96 * n: [length][text].
+; =============================================================================
+NT_BASE     .equ $C010
+NT_PAGE     .equ 7
+
+nt_init:                        ; first use (or the RAM was lost): clear the four slots and set the marker
+    ld a,NT_PAGE
+    call S_RAM_PAGE
+    ld hl,$C000
+    ld a,(hl)
+    cp 'N'
+    jr nz,nti_clear
+    inc hl
+    ld a,(hl)
+    cp 'T'
+    jr z,nti_done
+nti_clear:
+    ld hl,$C000
+    ld de,$C001
+    ld bc,$017F
+    ld (hl),0
+    ldir
+    ld a,'N'
+    ld ($C000),a
+    ld a,'T'
+    ld ($C001),a
+nti_done:
+    xor a
+    jp S_RAM_PAGE
+
+nt_slotptr:                     ; A = slot -> HL = its address (clobbers A, DE)
+    ld l,a
+    ld h,0
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,hl                   ; * 32
+    ld d,h
+    ld e,l
+    add hl,hl                   ; * 64
+    add hl,de                   ; * 96
+    ld de,NT_BASE
+    add hl,de
+    ret
+
+nt_load:                        ; A = slot -> EDBUF, v_inlen
+    push af
+    ld a,NT_PAGE
+    call S_RAM_PAGE
+    pop af
+    call nt_slotptr
+    ld a,(hl)
+    cp 91
+    jr c,ntl_ok
+    xor a
+ntl_ok:
+    ld (v_inlen),a
+    ld de,EDBUF
+    or a
+    jr z,ntl_end
+    ld c,a
+    ld b,0
+    inc hl
+    ldir
+ntl_end:
+    xor a
+    ld (de),a
+    jp S_RAM_PAGE
+
+nt_save:                        ; A = slot <- EDBUF, v_inlen
+    push af
+    ld a,NT_PAGE
+    call S_RAM_PAGE
+    pop af
+    call nt_slotptr
+    ld a,(v_inlen)
+    ld (hl),a
+    or a
+    jr z,nts_end
+    inc hl
+    ex de,hl
+    ld hl,EDBUF
+    ld c,a
+    ld b,0
+    ldir
+nts_end:
+    xor a
+    jp S_RAM_PAGE
+
+nt_clear:                       ; A = slot
+    push af
+    ld a,NT_PAGE
+    call S_RAM_PAGE
+    pop af
+    call nt_slotptr
+    ld (hl),0
+    xor a
+    jp S_RAM_PAGE
+
+nt_line:                        ; A = slot -> PLOTSSCREEN = "n text" (the first 20 characters) or "n -"
+    ld c,a
+    push bc
+    ld a,NT_PAGE
+    call S_RAM_PAGE
+    pop bc
+    ld a,c
+    push bc
+    call nt_slotptr
+    pop bc
+    ld de,PLOTSSCREEN
+    ld a,c
+    add a,'1'
+    ld (de),a
+    inc de
+    ld a,' '
+    ld (de),a
+    inc de
+    ld a,(hl)
+    inc hl
+    or a
+    jr z,ntn_empty
+    cp 91
+    jr nc,ntn_empty
+    cp 21
+    jr c,ntn_cp
+    ld a,20
+ntn_cp:
+    ld c,a
+    ld b,0
+    ldir
+    jr ntn_end
+ntn_empty:
+    ld a,'-'
+    ld (de),a
+    inc de
+ntn_end:
+    xor a
+    ld (de),a
+    jp S_RAM_PAGE
+
+nt_digit:                       ; A = key -> A = slot 0..3, or $FF
+    ld c,0
+    cp K_1
+    jr z,ntd_ok
+    inc c
+    cp K_2
+    jr z,ntd_ok
+    inc c
+    cp K_3
+    jr z,ntd_ok
+    inc c
+    cp K_4
+    jr z,ntd_ok
+    ld a,$FF
+    ret
+ntd_ok:
+    ld a,c
+    ret
+
+app_notes:
+    call nt_init
+nt_list:
+    ld hl,STR_APP_NOTES
+    call ui_begin_id
+    xor a
+    ld (v_ui0),a
+nt_draw:
+    ld a,(v_ui0)
+    call nt_line
+    ld a,(v_ui0)
+    add a,a
+    add a,a
+    add a,a
+    add a,14
+    ld c,a
+    ld b,0
+    ld hl,PLOTSSCREEN
+    call S_PUTS
+    ld hl,v_ui0
+    inc (hl)
+    ld a,(hl)
+    cp 4
+    jr nz,nt_draw
+    ld hl,STR_NT_HINT
+    call tr
+    ld b,0
+    ld c,58
+    call S_PUTS_SMALL
+    call ui_wait_any
+    cp K_CLEAR
+    ret z
+    cp K_DEL
+    jr z,nt_del
+    call nt_digit
+    cp $FF
+    jr z,nt_list
+    ld (v_ui1),a
+    call nt_load
+    ld hl,STR_NT_EDIT
+    call tr
+    ld a,4                      ; edit the text that is already in EDBUF
+    call S_TEXT_EDIT
+    jr c,nt_list                ; CLEAR: the note stays as it was
+    ld a,(v_ui1)
+    call nt_save
+    jr nt_list
+nt_del:                         ; DEL, then the number of the note
+    call ui_wait_any
+    call nt_digit
+    cp $FF
+    jr z,nt_list
+    call nt_clear
+    jr nt_list

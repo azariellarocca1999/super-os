@@ -1,7 +1,7 @@
 ; =============================================================================
 ; Text entry: T9 predictive (ES+EN dictionary, ZX0 in flash), ABC (TI alpha layout) and 123 modes.
 ;  ALPHA cycles T9 -> ABC -> 123.  2ND toggles case (ABC).  DEL backspace.  ENTER accepts.  CLEAR cancels.
-;  Result: EDBUF / v_inlen.   A = flags on entry (b0: MODE toggles the AI model, b1: start in ABC)
+;  Result: EDBUF / v_inlen.   A = flags on entry (b0: MODE toggles the AI model, b1: start in ABC, b2: edit the text already in EDBUF)
 ;  CF = cancelled.  The dictionary lives in the $C000 window (RAM page 0).
 ; =============================================================================
 ED_MAX      .equ 90
@@ -28,13 +28,18 @@ edit_have:
     pop hl
     ld (v_edtitle),hl
     xor a
-    ld (v_inlen),a
     ld (v_t9len),a
     ld (v_t9cnt),a
     ld (v_t9sel),a
-    ld (EDBUF),a
     ld (v_edmode),a
     ld (v_edcase),a
+    ld a,(v_edflags)
+    bit 2,a                     ; b2: EDBUF / v_inlen already hold the text to edit (the notepad)
+    jr nz,edit_keep
+    xor a
+    ld (v_inlen),a
+    ld (EDBUF),a
+edit_keep:
     ld a,(v_edflags)
     bit 1,a
     jr z,edit_loop

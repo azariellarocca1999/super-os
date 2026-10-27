@@ -4,14 +4,15 @@
 
 [English](README.md) · [Instalar](docs/INSTALL.md) · [Juegos](docs/GAMES.md) · [Manual](docs/MANUAL.md) · [Estado](docs/STATUS.md)
 
-![Los siete juegos nativos](docs/screens/games.png)
+![Los juegos nativos](docs/screens/games.png)
 
 > **Estado, con honestidad.** Super-OS es **alfa**. Se escribió y probó en un emulador y el 26/10/2026 arrancó por primera vez en una TI-83+ SE real (boot code 1.00, OS 1.19). Todo lo posterior a "arranca y muestra la pantalla de inicio" está verificado **solo en el emulador**; los problemas que aparecieron en la calculadora real justo después (teclado, juegos) están corregidos en esta versión pero **todavía no se volvieron a probar en la unidad**. El firmware del ESP32 nunca corrió en un chip. Instalar un OS puede dejar la calculadora inutilizable hasta reinstalar el oficial: leé primero [docs/INSTALL.md](docs/INSTALL.md), incluida la sección "la vuelta atrás".
 
 ## Qué trae
 
 * **Un sistema operativo de verdad**: núcleo con multitarea, interfaz de 96x64 con dos fuentes, ES / EN, tres perfiles de batería, reposo profundo, reloj en tiempo real, ajustes guardados en flash, tienda de paquetes con instalación por aire y diagnósticos de hardware (LCD, teclado, RAM, flash, tiempos, enlace).
-* **Siete juegos nativos** a pantalla completa, con récords, pausa y reposo: **Tetris, Snake, Breakout, Pong, 2048, Space Invaders y Buscaminas** ([guía](docs/GAMES.md)), más seis clásicos CHIP-8.
+* **Nueve juegos nativos** a pantalla completa, con pausa, reposo y **récords guardados en flash**: **Tetris, Snake, Breakout, Pong, 2048, Space Invaders, Buscaminas, Sokoban (8 niveles con solución comprobada) y Reversi (contra la calculadora)** ([guía](docs/GAMES.md)), más seis clásicos CHIP-8.
+* **Extras de todos los días**: bloqueo con PIN al despertar y **modo examen** (solo calculadora: se cierran juegos, IA y apps de red), **bloc de notas** de cuatro notas y atajo de contraste (`+` / `-` en el inicio). Comparación con KnightOS y Doors CS: [docs/FEATURES.md](docs/FEATURES.md).
 * **Herramientas científicas**: calculadora estilo TI con menú MATH, graficador 2D, conversor de unidades, tabla periódica y constantes físicas.
 * **Con el ESP32-S3** (opcional): chat DeepSeek, **Super-CAS** (derivadas, integrales, límites, ecuaciones, matrices, gráficos 3D), Wikipedia, clima y juegos en streaming. Sin él todo lo demás funciona: las apps que lo necesitan avisan y CLEAR cancela la espera.
 

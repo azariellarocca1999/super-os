@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Checks added by the supervision review (docs/REVIEW.md, second pass).  Each one reproduced a defect before its fix.
 Called from selftest.py; `python tools/selftest_review.py` runs only this part."""
 import os
@@ -64,7 +64,7 @@ def run(check_fn=None):
     if os.path.exists(ESP["HZ_BRIDGE_LOG"]):
         os.remove(ESP["HZ_BRIDGE_LOG"])
     s = Session("rv_stopclear", start=1500)
-    s.press("TRACE", "K9")                                   # GAMES tab, STREAM 3D
+    s.press("TRACE", "K9", "K3")                                   # GAMES tab, STREAM 3D
     s.snap("list", wait=3200)
     s.press("ENTER")
     s.snap("g1", wait=2500)

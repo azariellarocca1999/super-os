@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Milestone 4 screenshots -> docs/screens/milestone4.png (game menu, the six CHIP-8 games, streamed maze 3D and Game Boy)."""
 import os
 import sys
@@ -21,9 +21,7 @@ def hold(s, name, ms):
 
 def game(tag, pack, index, wait, keys=(), env=None, menu=False):
     s = Session(tag, start=1500)
-    s.press("TRACE", pack)
-    if pack == "K8":
-        pass
+    s.press("TRACE", *{"K8": ["K9", "K2"], "K9": ["K9", "K3"]}[pack])      # page 2 of the GAMES tab: 2 = CLASSIC menu, 3 = STREAM
     if menu:
         s.snap("menu", wait=3500 if env else 400)
     elif env:

@@ -345,9 +345,9 @@ flash_write_block_l:
 ; Record: [$A5][9 settings bytes][xor-checksum][5 x $FF].  Append-only; when the page is full the 64 KB sector
 ; is erased and the journal restarts (1024 saves per erase cycle).  RAM stays the working copy (battery backed);
 ; the journal restores it after a RAM loss (battery removal, crash) and survives resets.
-REC_LEN     .equ 16
-REC_COUNT   .equ 1024
-WORKREC     .equ VARS+$A0
+REC_LEN     .equ 64
+REC_COUNT   .equ 256
+WORKREC     .equ SETTINGS+$40           ; 64 B scratch behind the settings ($8740..$877F)
 
 settings_rec_sum:               ; HL = record -> A = checksum of bytes 1..9
     push hl
@@ -485,7 +485,9 @@ settings_flash_save_room:
     add hl,hl
     add hl,hl
     add hl,hl
-    add hl,hl                   ; slot * 16
+    add hl,hl
+    add hl,hl
+    add hl,hl                   ; slot * 64
     ld bc,$4000
     add hl,bc
     call settings_slot_blank    ; foreign data (an old TI-OS archive) or a torn write: programming it would never verify

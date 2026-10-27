@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Screenshots of the native games -> docs/screens/games.png (menu + seven games) and one PNG per game in docs/screens/."""
+"""Screenshots of the native games -> docs/screens/games.png (menu + nine games) and one PNG per game in docs/screens/."""
 import os
 import sys
 
@@ -18,7 +18,7 @@ def hold(s, name, ms):
 
 def game(tag, item, script, wait):
     s = Session(tag, start=1500)
-    s.press("TRACE", "K%d" % item if item else "K1")
+    s.press("TRACE", *(["K%d" % item] if isinstance(item, int) else ["K" + k for k in item.split(",")]))   # "9,1" = second page, item 1
     s.t += 500
     for step in script:
         if step[0] == "key":
@@ -49,9 +49,11 @@ def main():
     game("g2048", 5, mv, 200)
     game("invaders", 6, [("wait", 600), ("hold", "RIGHT", 300), ("key", "ALPHA"), ("wait", 1500)], 100)
     game("mines", 7, [("wait", 500), ("key", "ENTER"), ("wait", 700), ("key", "RIGHT"), ("key", "RIGHT"), ("key", "ALPHA"), ("wait", 200)], 100)
+    game("sokoban", 8, [("wait", 500), ("key", "UP"), ("wait", 150), ("key", "RIGHT"), ("wait", 150), ("key", "RIGHT"), ("wait", 150), ("key", "RIGHT"), ("wait", 300)], 100)
+    game("reversi", "9,1", [("wait", 500), ("key", "ENTER"), ("wait", 1500), ("key", "RIGHT"), ("wait", 200)], 100)
     ims = [Image.open(s.png(n, 3)) for _tag, s, n in shots]
     w, h = ims[0].size
-    cols = 4
+    cols = 5
     rows = (len(ims) + cols - 1) // cols
     m = Image.new("RGB", (cols * (w + 8) + 8, rows * (h + 8) + 8), (255, 255, 255))
     for i, im in enumerate(ims):
