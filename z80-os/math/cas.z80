@@ -1,0 +1,926 @@
+; =============================================================================
+; cas.z80 -- Super-CAS client (the engine runs on the ESP32), 3D surface viewer, step-by-step (DeepSeek R1) and the
+; [PLOT: f(x), xmin, xmax] hook for AI answers.  Everything typed here is sent as text:
+;   CMD_CAS    "diff(sin(x)*x,x)"  ->  text result
+;   CMD_PLOT3D "plot3d(f(x,y),x0,x1,y0,y1)" -> 768-byte bitmap (frame buffer layout)
+;   CMD_CHAT   [1] "Explain step by step: ..." -> R1 explanation
+; =============================================================================
+CS_BASE  .equ GR_END
+cs_buf   .equ CS_BASE           ; 64 bytes: expression being typed
+cs_last  .equ (CS_BASE+64)      ; 64 bytes: previous command
+cs_mode  .equ (CS_BASE+128)     ; 0 = run commands, 1 = ask R1 to explain
+lm_tab   .equ (CS_BASE+130)     ; 2
+lm_cnt   .equ (CS_BASE+132)
+lm_title .equ (CS_BASE+133)     ; 2
+lm_ptrs  .equ (CS_BASE+136)     ; 24: pointer table built at run time
+cv_cat   .equ (CS_BASE+160)
+cv_from  .equ (CS_BASE+161)
+cv_to    .equ (CS_BASE+162)
+cv_val   .equ (CS_BASE+164)     ; 6
+cv_res   .equ (CS_BASE+170)     ; 6
+cv_ptr   .equ (CS_BASE+176)     ; 2 (units of the current category)
+cv_cnt   .equ (CS_BASE+178)
+cv_tmp   .equ (CS_BASE+180)     ; 6
+cv_tmp2  .equ (CS_BASE+186)     ; 6
+CS_END   .equ (CS_BASE+200)
+
+; ---- generic list menu: HL = table of string pointers, B = count, DE = title -> A = index or $FF ------------------------------
+lm_menu:
+    ld (lm_tab),hl
+    ld a,b
+    ld (lm_cnt),a
+    ld (lm_title),de
+    xor a
+    ld (m_sel),a
+    ld (m_top),a
+lm_loop:
+    call lm_draw
+    call S_LCD_BLIT
+    call S_WAIT_KEY
+    cp K_UP
+    jr z,lm_up
+    cp K_DOWN
+    jr z,lm_down
+    cp K_ENTER
+    jr z,lm_pick
+    cp K_CLEAR
+    jr z,lm_cancel
+    ld hl,lm_digits
+    ld b,0
+lm_dg:
+    cp (hl)
+    jr z,lm_dpick
+    inc hl
+    inc b
+    ld c,a
+    ld a,b
+    cp 8
+    ld a,c
+    jr c,lm_dg
+    jr lm_loop
+lm_dpick:
+    ld a,(m_top)
+    add a,b
+    ld hl,lm_cnt
+    cp (hl)
+    jr nc,lm_loop
+    ret
+lm_digits: .db K_1,K_2,K_3,K_4,K_5,K_6,K_7,K_8
+lm_cancel:
+    ld a,$FF
+    ret
+lm_pick:
+    ld a,(m_sel)
+    ret
+lm_up:
+    ld a,(m_sel)
+    or a
+    jr z,lm_loop
+    dec a
+    ld (m_sel),a
+    ld hl,m_top
+    cp (hl)
+    jr nc,lm_loop
+    ld (hl),a
+    jr lm_loop
+lm_down:
+    ld a,(m_sel)
+    inc a
+    ld hl,lm_cnt
+    cp (hl)
+    jr nc,lm_loop
+    ld (m_sel),a
+    ld b,a
+    ld a,(m_top)
+    add a,7
+    cp b
+    jr nc,lm_loop
+    ld a,(m_top)
+    inc a
+    ld (m_top),a
+    jr lm_loop
+
+lm_draw:
+    ld hl,(lm_title)
+    call S_UI_BEGIN
+    xor a
+    ld (m_row),a
+lmd1:
+    ld a,(m_top)
+    ld b,a
+    ld a,(m_row)
+    add a,b
+    ld hl,lm_cnt
+    cp (hl)
+    ret nc
+    push af
+    add a,a
+    ld e,a
+    ld d,0
+    ld hl,(lm_tab)
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ex de,hl
+    ld a,(m_row)
+    call S_UI_LINE_Y
+    ld b,1
+    call S_PUTS
+    pop af
+    ld b,a
+    ld a,(m_sel)
+    cp b
+    jr nz,lmd2
+    ld a,(m_row)
+    call S_UI_LINE_Y
+    ld b,0
+    ld d,12
+    ld e,6
+    call S_GFX_INVERT
+lmd2:
+    ld hl,m_row
+    inc (hl)
+    ld a,(hl)
+    cp 8
+    jr c,lmd1
+    ret
+
+; ---- CAS command menu (inserted into the expression editor) -----------------------------------------------------------------------
+cas_menu:
+    ld hl,MS_CMD_TITLE
+    call m_tr
+    ex de,hl
+    ld hl,cm_ptrs
+    ld b,CM_COUNT
+    call lm_menu
+    cp $FF
+    ret z                       ; A = $FF != 0 would be inserted: return 0 below
+    add a,a
+    ld e,a
+    ld d,0
+    ld hl,cm_ptrs
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ex de,hl
+cm_ins:
+    ld a,(hl)
+    or a
+    jr z,cm_done
+    push hl
+    call ed_insert
+    pop hl
+    inc hl
+    jr cm_ins
+cm_done:
+    xor a
+    ret
+
+CM_COUNT .equ 21
+cm_ptrs:
+    .dw cm0,cm1,cm2,cm3,cm4,cm5,cm6,cm7,cm8,cm9,cm10,cm11,cm12,cm13,cm14,cm15,cm16,cm17,cm18,cm19,cm20
+cm0:  .db "diff(",0
+cm1:  .db "int(",0
+cm2:  .db "taylor(",0
+cm3:  .db "solve(",0
+cm4:  .db "limit(",0
+cm5:  .db "factor(",0
+cm6:  .db "expand(",0
+cm7:  .db "simplify(",0
+cm8:  .db "together(",0
+cm9:  .db "det(",0
+cm10: .db "inv(",0
+cm11: .db "transpose(",0
+cm12: .db "eig(",0
+cm13: .db "rank(",0
+cm14: .db "rref(",0
+cm15: .db "trace(",0
+cm16: .db "approx(",0
+cm17: .db "subs(",0
+cm18: .db "sum(",0
+cm19: .db "gcd(",0
+cm20: .db "plot3d(",0
+
+; ---- tokens -> ASCII text for the ESP32 ---------------------------------------------------------------------------------------------------
+; HL = tokens, DE = destination -> DE = end (zero written)
+cas_detok:
+    ld a,(hl)
+    or a
+    jr z,cd_end
+    cp $80
+    jr c,cd_plain
+    push hl
+    cp $F0
+    jr nc,cd_special
+    sub $80
+    ld l,a
+    ld h,0
+    add hl,hl
+    ld bc,tok_names
+    add hl,bc
+    ld c,(hl)
+    inc hl
+    ld h,(hl)
+    ld l,c
+    jr cd_copy
+cd_special:
+    sub $F0
+    cp 4
+    jr c,cd_sp2
+    xor a
+cd_sp2:
+    ld l,a
+    ld h,0
+    add hl,hl
+    ld bc,cd_sptab
+    add hl,bc
+    ld c,(hl)
+    inc hl
+    ld h,(hl)
+    ld l,c
+cd_copy:
+    ld a,(hl)
+    or a
+    jr z,cd_cdone
+    ld (de),a
+    inc hl
+    inc de
+    jr cd_copy
+cd_cdone:
+    pop hl
+    inc hl
+    jr cas_detok
+cd_plain:
+    ld (de),a
+    inc de
+    inc hl
+    jr cas_detok
+cd_end:
+    xor a
+    ld (de),a
+    ret
+cd_sptab: .dw cd_pi,cd_ans,cd_e,cd_ee
+cd_pi:  .db "pi",0
+cd_ans: .db "ans",0
+cd_e:   .db "e",0
+cd_ee:  .db "E",0
+
+; ---- ASCII formula -> tokens ----------------------------------------------------------------------------------------------------------------
+; HL = text, DE = destination (<= 47 tokens).  Stops at a top level ',' / ']' / newline / zero.  -> HL = stop char, DE = end, CF = error
+txt_tok:
+    ld a,0
+    ld (m_misc2),a              ; paren depth
+    ld a,47
+    ld (fm_tmp),a               ; room left
+tt_loop:
+    ld a,(hl)
+    or a
+    jp z,tt_done
+    cp 10
+    jp z,tt_done
+    cp ' '
+    jr nz,tt_n0
+    inc hl
+    jr tt_loop
+tt_n0:
+    cp ']'
+    jp z,tt_done
+    cp ','
+    jr nz,tt_n1
+    ld a,(m_misc2)
+    or a
+    jp z,tt_done
+    ld a,','
+    jp tt_put
+tt_n1:
+    cp '('
+    jr nz,tt_n2
+    ld a,(m_misc2)
+    inc a
+    ld (m_misc2),a
+    ld a,'('
+    jp tt_put
+tt_n2:
+    cp ')'
+    jr nz,tt_n3
+    ld a,(m_misc2)
+    or a
+    jp z,tt_err
+    dec a
+    ld (m_misc2),a
+    ld a,')'
+    jp tt_put
+tt_n3:
+    cp '*'
+    jr nz,tt_n4
+    inc hl
+    ld a,(hl)
+    cp '*'
+    jr z,tt_pow
+    dec hl
+    ld a,'*'
+    jr tt_put
+tt_pow:
+    ld a,'^'
+    jr tt_put
+tt_n4:
+    cp '0'
+    jr c,tt_op
+    cp '9'+1
+    jr c,tt_num
+    or $20                      ; lower case
+    cp 'a'
+    jp c,tt_err
+    cp 'z'+1
+    jr c,tt_ident
+tt_op:
+    ld a,(hl)
+    cp '+'
+    jr z,tt_put
+    cp '-'
+    jr z,tt_put
+    cp '/'
+    jr z,tt_put
+    cp '^'
+    jr z,tt_put
+    cp '.'
+    jr z,tt_put
+    cp '!'
+    jr z,tt_put
+    cp '%'
+    jr z,tt_put
+    jp tt_err
+tt_num:                         ; digits / point, 'e' followed by a digit or sign becomes the EE token
+    ld a,(hl)
+    cp '9'+1
+    jr nc,tt_numx
+    cp '0'
+    jr c,tt_numx
+    call tt_emit
+    ret c
+    inc hl
+    jr tt_num
+tt_numx:
+    cp '.'
+    jr nz,tt_numE
+    call tt_emit
+    ret c
+    inc hl
+    jr tt_num
+tt_numE:
+    or $20
+    cp 'e'
+    jp nz,tt_loop
+    inc hl
+    ld a,(hl)
+    dec hl
+    cp '-'
+    jr z,tt_ee
+    cp '+'
+    jr z,tt_ee
+    cp '0'
+    jp c,tt_loop
+    cp '9'+1
+    jp nc,tt_loop
+tt_ee:
+    ld a,T_EE
+    call tt_emit
+    ret c
+    inc hl
+    ld a,(hl)
+    cp '+'
+    jr nz,tt_num
+    inc hl
+    jr tt_num
+tt_put:
+    call tt_emit
+    ret c
+    inc hl
+    jp tt_loop
+tt_ident:                       ; HL at the first letter
+    push de                     ; destination
+    ld de,txt_names
+tt_i1:
+    ld a,(de)
+    or a
+    jr z,tt_i_none
+    ld b,a                      ; name length
+    push hl
+    push de
+    inc de
+tt_i2:
+    ld a,(hl)
+    or $20
+    ld c,a
+    ld a,(de)
+    cp c
+    jr nz,tt_i_next
+    inc hl
+    inc de
+    djnz tt_i2
+    ld a,(hl)
+    cp '('
+    jr nz,tt_i_next             ; functions need '('
+    ld a,(de)                   ; token byte
+    ld c,a
+    inc hl                      ; consume '('
+    pop de                      ; discard the table entry
+    pop de                      ; discard the saved text pointer
+    pop de                      ; destination
+    ld a,(m_misc2)
+    inc a
+    ld (m_misc2),a              ; the token includes the '('
+    ld a,c
+    call tt_emit
+    ret c
+    jp tt_loop
+tt_i_next:
+    pop de                      ; this table entry
+    pop hl                      ; text start
+    push hl
+    ex de,hl
+    ld a,(hl)
+    add a,2                     ; entry = length byte + name + token
+    ld c,a
+    ld b,0
+    add hl,bc
+    ex de,hl                    ; DE = next entry
+    pop hl
+    jp tt_i1
+tt_i_none:
+    pop de
+    ; one letter, "pi" or "ans"
+    ld a,(hl)
+    or $20
+    ld b,a
+    inc hl
+    ld a,(hl)
+    or $20
+    cp 'a'
+    jr c,tt_single
+    cp 'z'+1
+    jr nc,tt_single
+    ld c,a
+    ld a,b
+    cp 'p'
+    jr nz,tt_ans
+    ld a,c
+    cp 'i'
+    jr nz,tt_err
+    inc hl
+    ld a,(hl)
+    or $20
+    cp 'a'
+    jr c,tt_pi_ok
+    cp 'z'+1
+    jr c,tt_err
+tt_pi_ok:
+    ld a,T_PI
+    call tt_emit
+    ret c
+    jp tt_loop
+tt_ans:
+    cp 'a'
+    jr nz,tt_err
+    ld a,c
+    cp 'n'
+    jr nz,tt_err
+    inc hl
+    ld a,(hl)
+    or $20
+    cp 's'
+    jr nz,tt_err
+    inc hl
+    ld a,T_ANS
+    call tt_emit
+    ret c
+    jp tt_loop
+tt_single:
+    ld a,b
+    cp 'e'
+    jr nz,tt_var
+    ld a,T_E
+    call tt_emit
+    ret c
+    jp tt_loop
+tt_var:
+    ld a,b
+    and $DF                     ; upper case
+    call tt_emit
+    ret c
+    jp tt_loop
+tt_done:
+    xor a
+    ld (de),a
+    ret
+tt_err:
+    scf
+    ret
+tt_emit:                        ; A -> (DE++), CF if the room is used up
+    push af
+    ld a,(fm_tmp)
+    or a
+    jr z,tt_full
+    dec a
+    ld (fm_tmp),a
+    pop af
+    ld (de),a
+    inc de
+    or a
+    ret
+tt_full:
+    pop af
+    scf
+    ret
+
+; ---- the CAS screen ------------------------------------------------------------------------------------------------------------------------------
+cas_main:
+    xor a
+    jr cas_start
+casstep_main:
+    ld a,1
+cas_start:
+    ld (m_sp),sp
+    ld sp,MSTACK
+    ld (cs_mode),a
+    call m_init
+    ld a,(v_font)
+    ld (m_oldfont),a
+    xor a
+    ld (v_font),a
+    ld a,(v_mode)
+    ld (m_oldmode),a
+    xor a
+    call S_SET_MODE
+    ld a,1
+    ld (ed_menu),a
+    ld hl,cs_buf
+    ld a,60
+    call ed_start
+cs_loop:
+    call cs_draw
+    call S_LCD_BLIT
+    call S_WAIT_KEY
+    call ed_key
+    or a
+    jr z,cs_loop
+    cp KC_ENTER
+    jp z,cs_go
+    cp KC_UP
+    jr z,cs_recall
+    cp KC_CLEAR
+    jr z,cs_quit
+    cp KC_QUIT
+    jr z,cs_quit
+    cp KC_STAT
+    jp z,cs_explain
+    jr cs_loop
+cs_quit:
+    xor a
+    ld (ed_menu),a
+    ld a,(m_oldfont)
+    ld (v_font),a
+    ld a,(m_oldmode)
+    call S_SET_MODE
+    ld sp,(m_sp)
+    ret
+cs_recall:
+    ld hl,cs_last
+    ld de,cs_buf
+    ld bc,64
+    ldir
+    ld hl,cs_buf
+    ld a,60
+    call ed_start
+    jr cs_loop
+
+cs_draw:
+    ld hl,MS_CAS_TITLE
+    ld a,(cs_mode)
+    or a
+    jr z,csd1
+    ld hl,MS_STEP_TITLE
+csd1:
+    call m_tr
+    call S_UI_BEGIN
+    xor a
+    ld (rn_col),a
+    ld a,24
+    ld (rn_w),a
+    ld hl,(ed_buf)
+    ld a,(ed_cur)
+    ld b,a
+    ld c,16
+    call ed_render
+    ld a,(ed_mod)
+    or a
+    jr z,csd2
+    ld hl,cd_2nd
+    bit 0,a
+    jr nz,csd3
+    ld hl,cd_alpha
+csd3:
+    ld b,0
+    ld c,44
+    call S_PUTS
+csd2:
+    ld hl,MS_CAS_HINT
+    ld a,(cs_mode)
+    or a
+    jr z,csd4
+    ld hl,MS_STEP_HINT
+csd4:
+    call m_tr
+    ld b,0
+    ld c,56
+    jp S_PUTS
+
+cs_wait:
+    ld hl,MS_CAS_TITLE
+    call m_tr
+    call S_UI_BEGIN
+    ld hl,MS_PLOTTING
+    call m_tr
+    ld b,6
+    ld c,28
+    call S_PUTS
+    jp S_LCD_BLIT
+
+cs_go:
+    ld a,(ed_len)
+    or a
+    jp z,cs_loop
+    ld hl,cs_buf
+    ld de,cs_last
+    ld bc,64
+    ldir
+    ld a,(cs_mode)
+    or a
+    jp nz,cs_explain
+    ld hl,cs_buf
+    ld de,INBUF
+    call cas_detok
+    ld hl,INBUF
+    ld a,(hl)
+    or $20
+    cp 'p'
+    jr nz,cs_text
+    inc hl
+    ld a,(hl)
+    or $20
+    cp 'l'
+    jr nz,cs_text
+    inc hl
+    ld a,(hl)
+    or $20
+    cp 'o'
+    jr nz,cs_text
+    jr cs_plot3d
+cs_text:
+    call cs_wait
+    ld hl,INBUF
+    call cs_len
+    ld a,CMD_CAS
+    ld hl,INBUF
+    call S_LINK_REQUEST
+    jp c,cs_fail
+    call inflate_reply
+    call viewer
+    jp cs_loop
+cs_len:                         ; HL = text -> B = length (at most 250)
+    ld b,0
+csl1:
+    ld a,(hl)
+    or a
+    ret z
+    inc hl
+    inc b
+    ld a,b
+    cp 250
+    jr c,csl1
+    ret
+cs_fail:
+    ld hl,MS_ERR4
+    call m_tr
+    call S_UI_BEGIN
+    ld hl,cs_nolink
+    ld b,1
+    ld c,28
+    call S_PUTS
+    call S_LCD_BLIT
+    call S_WAIT_KEY
+    jp cs_loop
+cs_nolink: .db "NO ESP32",0
+
+cs_plot3d:
+    call cs_wait
+    ld hl,INBUF
+    call cs_len
+    ld a,CMD_PLOT3D
+    ld hl,INBUF
+    call S_LINK_REQUEST
+    jr c,cs_p3fail
+    call inflate_reply
+    ld hl,TEXTBUF
+    ld de,GBUF1
+    ld bc,768
+    ldir
+    call S_LCD_BLIT
+    call S_WAIT_KEY
+    jp cs_loop
+cs_p3fail:
+    ld hl,MS_PLOT3D_ERR
+    call m_tr
+    call S_UI_BEGIN
+    ld hl,MS_PLOT3D_HELP
+    call m_tr
+    ld b,0
+    ld c,28
+    call S_PUTS
+    call S_LCD_BLIT
+    call S_WAIT_KEY
+    jp cs_loop
+
+; step by step: [R1]["Explain step by step: " + command]
+cs_explain:
+    ld a,(ed_len)
+    or a
+    jp z,cs_loop
+    ld hl,cs_buf
+    ld de,cs_last
+    ld bc,64
+    ldir
+    ld a,1
+    ld (INBUF),a
+    ld hl,cs_prefix
+    ld de,INBUF+1
+cx1:
+    ld a,(hl)
+    or a
+    jr z,cx2
+    ld (de),a
+    inc hl
+    inc de
+    jr cx1
+cx2:
+    ld hl,cs_buf
+    call cas_detok
+    call cs_wait
+    ld hl,INBUF+1
+    call cs_len
+    inc b
+    ld a,CMD_CHAT
+    ld hl,INBUF
+    call S_LINK_REQUEST
+    jp c,cs_fail
+    call inflate_reply
+    call viewer
+    jp cs_loop
+cs_prefix: .db "Explain step by step: ",0
+
+; ---- AI answers with  [PLOT: expr, xmin, xmax]  ---------------------------------------------------------------------------------------------
+aiplot_main:
+    ld (m_sp),sp
+    ld sp,MSTACK
+    call m_init
+    ld a,(v_font)
+    ld (m_oldfont),a
+    xor a
+    ld (v_font),a
+    ld a,(v_mode)
+    ld (m_oldmode),a
+    xor a
+    call S_SET_MODE
+    call ap_run
+    ld a,(m_oldfont)
+    ld (v_font),a
+    ld a,(m_oldmode)
+    call S_SET_MODE
+    ld sp,(m_sp)
+    ret
+ap_run:
+    ld hl,TEXTBUF
+ap_find:
+    ld a,(hl)
+    or a
+    ret z
+    cp '['
+    jr nz,ap_nx
+    push hl
+    inc hl
+    ld de,ap_key
+ap_cmp:
+    ld a,(de)
+    or a
+    jr z,ap_found
+    ld a,(hl)
+    or $20
+    ld b,a
+    ld a,(de)
+    cp b
+    jr nz,ap_miss
+    inc hl
+    inc de
+    jr ap_cmp
+ap_miss:
+    pop hl
+ap_nx:
+    inc hl
+    jr ap_find
+ap_found:
+    pop de                      ; discard the '[' position
+    push hl
+    call gr_std
+    pop hl
+    ld de,gr_y1
+    call txt_tok
+    ret c
+    ld a,(hl)
+    cp ','
+    jr nz,ap_noreal
+    inc hl
+    ld de,gr_edbuf
+    call txt_tok
+    ret c
+    push hl
+    ld hl,gr_edbuf
+    call ev_eval
+    jr c,ap_bad
+    ld de,gr_xmin
+    call fx_sta
+    pop hl
+    ld a,(hl)
+    cp ','
+    jr nz,ap_ask
+    inc hl
+    ld de,gr_edbuf
+    call txt_tok
+    ret c
+    push hl
+    ld hl,gr_edbuf
+    call ev_eval
+    jr c,ap_bad
+    ld de,gr_xmax
+    call fx_sta
+    pop hl
+    jr ap_ask
+ap_bad:
+    pop hl
+    ret
+ap_noreal:
+ap_ask:
+    ld hl,MS_PLOT_ASK
+    call m_tr
+    call S_UI_BEGIN
+    xor a
+    ld (rn_col),a
+    ld a,24
+    ld (rn_w),a
+    ld hl,gr_y1
+    ld b,255
+    ld c,20
+    call ed_render
+    ld hl,MS_PLOT_KEYS
+    call m_tr
+    ld b,0
+    ld c,50
+    call S_PUTS
+    call S_LCD_BLIT
+    call S_WAIT_KEY
+    cp K_ENTER
+    ret nz
+    ld hl,gr_y1+48              ; Y2 / Y3 off
+    ld de,gr_y1+49
+    ld bc,95
+    ld (hl),0
+    ldir
+    xor a
+    call gr_setcur
+    call zm_fit
+    ld a,KC_GRAPH
+    jp graph_entry
+ap_key: .db "plot:",0
+
+; HL = text such as "6.62607015E-34" -> the calculator variable ANS
+const_store:
+    ld de,gr_edbuf
+cst1:
+    ld a,(hl)
+    or a
+    jr z,cst2
+    cp 'E'
+    jr nz,cst_c
+    ld a,T_EE
+cst_c:
+    ld (de),a
+    inc hl
+    inc de
+    jr cst1
+cst2:
+    ld (de),a
+    ld hl,gr_edbuf
+    call fx_fromstr
+    ld a,26
+    jp fx_stvar

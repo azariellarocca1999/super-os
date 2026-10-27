@@ -1,0 +1,513 @@
+; =============================================================================
+; Storage: bank copy, persistent settings (battery-backed RAM, checksummed),
+; ZX0 file system in flash page 2, flash write guard.
+; =============================================================================
+
+bank_copy:                      ; A = flash page, HL = src ($4000..), DE = dst, BC = len
+    ex af,af'
+    in a,(P_BANKA)
+    push af
+    ex af,af'
+    out (P_BANKA),a
+    ldir
+    pop af
+    out (P_BANKA),a
+    ret
+
+; page 2 layout: font3 @$4000 (320) | font5 @$4140 (448) | file table @$4300 (256) | data
+A_FONT3     .equ $4000
+A_FSTAB     .equ $4300
+
+assets_load:
+    ld a,PG_ASSETS
+    ld hl,A_FONT3
+    ld de,FONT3
+    ld bc,320+448               ; both fonts are contiguous in RAM too
+    call bank_copy
+    ld a,PG_ASSETS
+    ld hl,A_FSTAB
+    ld de,FSTAB_RAM
+    ld bc,256
+    jp bank_copy
+
+; ---- settings -------------------------------------------------------------------------------------
+settings_load:
+    ld a,(s_magic)
+    cp 'S'
+    jr nz,settings_load_flash
+    ld a,(s_magic+1)
+    cp 'O'
+    jr nz,settings_load_flash
+    call settings_sum
+    ld hl,s_sum
+    cp (hl)
+    ret z
+settings_load_flash:            ; RAM lost: restore from the flash journal if there is one
+    call settings_flash_load
+    jr c,settings_load_def
+    call settings_sum
+    ld hl,s_sum
+    cp (hl)
+    ret z
+settings_load_def:
+    ld hl,SETTINGS
+    ld de,SETTINGS+1
+    ld bc,SETTINGS_LEN-1
+    ld (hl),0
+    ldir
+    ld a,'S'
+    ld (s_magic),a
+    ld a,'O'
+    ld (s_magic+1),a
+    ld a,8
+    ld (s_cadj),a
+    ld a,120
+    ld (s_sleepto),a
+    ld a,18
+    ld (s_espsleep),a           ; ESP32 deep sleep after 180 s without traffic
+settings_save:
+    call settings_sum
+    ld (s_sum),a
+    jp settings_flash_save
+
+settings_sum:                   ; A = checksum of the settings bytes
+    ld hl,SETTINGS
+    ld b,SETTINGS_LEN-1
+    ld a,$5A
+settings_sum_l:
+    xor (hl)
+    rlca
+    inc hl
+    djnz settings_sum_l
+    ret
+
+; ---- ZX0 file system ----------------------------------------------------------------------------------
+; entry (16 B): name[8] page[1] offset[2] clen[2] ulen[2] flags[1]
+fs_load:                        ; HL = name (0-term), DE = dest -> BC = ulen, CF = not found
+    push ix
+    push de
+    ld ix,FSTAB_RAM
+    ld b,16
+fs_load_f:
+    ld a,(ix+0)
+    or a
+    jr z,fs_load_nf
+    push hl
+    push ix
+    pop de
+    ld c,8
+fs_load_cmp:
+    ld a,(de)
+    cp (hl)
+    jr nz,fs_load_ne
+    or a
+    jr z,fs_load_match
+    inc hl
+    inc de
+    dec c
+    jr nz,fs_load_cmp
+fs_load_match:
+    pop hl
+    jr fs_load_found
+fs_load_ne:
+    pop hl
+    ld de,16
+    add ix,de
+    djnz fs_load_f
+fs_load_nf:
+    pop de
+    pop ix
+    scf
+    ret
+fs_load_found:
+    ld a,(ix+8)
+    ld l,(ix+9)
+    ld h,(ix+10)
+    ld c,(ix+13)
+    ld b,(ix+14)
+    pop de                      ; destination
+    push bc                     ; ulen is returned in BC
+    ex af,af'
+    in a,(P_BANKA)
+    push af
+    ex af,af'
+    out (P_BANKA),a
+    call dzx0_standard
+    pop af
+    out (P_BANKA),a
+    pop bc
+    pop ix
+    or a
+    ret
+
+; ---- flash: guard, program, erase -----------------------------------------------------------------------
+; The 83+SE hardware only honours the unlock (port $14) when the sequence 00 00 ED 56 F3 D3 14 is FETCHED
+; from a privileged page ($7C-$7F).  The 8-byte unlock/lock routine lives at $7C:$7FF0 (tools/flashunlock.z80);
+; the programming/erase loop runs from RAM because the chip is busy meanwhile.
+; Flash sectors are 64 KB = 4 pages: sectors 0-1 (pages $00-$07) hold our OS and pages $7C-$7F are privileged.
+;   programmable : pages $20..$7B       (package store, settings journal, diagnostics scratch; programming only clears bits).
+;                  The OS occupies pages $00-$06 and $7C; pages $07-$1F are left alone (a TI-OS archive may still be there).
+;   erasable     : sectors starting at page $20 .. $78  (never an OS sector, never the privileged ones)
+FL_PROG     .equ 0
+FL_ERASE    .equ 1
+
+flash_check_page:               ; B = page. CF = 1 when protected (programming)
+    ld a,b
+    cp PG_PRIV
+    jr nc,flash_check_page_deny
+    cp PG_PKGDIR                ; below the package store: the OS ($00-$06) and pages we do not own
+    jr c,flash_check_page_deny
+    or a
+    ret
+flash_check_page_deny:
+    scf
+    ret
+
+flash_check_erase:              ; B = any page of the sector. CF = 1 when the sector may not be erased
+    ld a,b
+    cp PG_PKGDIR
+    jr c,flash_check_page_deny
+    cp PG_PRIV-3                ; sectors from page $79 up share a sector with / precede the privileged pages
+    jr nc,flash_check_page_deny
+    or a
+    ret
+
+flash_write_byte:               ; A = value, B = page, HL = address in $4000-$7FFF.  CF=1 refused
+    push af
+    call flash_check_page
+    jr nc,flash_write_byte_ok
+    pop af
+    scf
+    ret
+flash_write_byte_ok:
+    pop af
+    ld (v_tmp0),a
+    ld a,FL_PROG
+    jr flash_run
+
+flash_erase_sector:             ; B = any page inside the sector.  CF=1 refused
+    call flash_check_erase
+    ret c
+    ld a,b
+    and $FC
+    ld b,a                      ; first page of the sector
+    ld hl,$4000
+    ld a,FL_ERASE
+flash_run:
+    ld (v_tmp3),a
+    push bc
+    push de
+    push hl
+    ld a,b
+    ld (v_tmp1),a
+    in a,(P_BANKA)
+    push af                     ; bank to restore
+    push hl
+    ld hl,flash_stub
+    ld de,FLASHRAM
+    ld bc,flash_stub_end-flash_stub
+    ldir
+    pop hl
+    ld a,i
+    push af                     ; IFF2 -> P/V: restore the caller's interrupt state afterwards
+    di
+    call FLASHRAM
+    ld (v_tmp3),a               ; 0 = done, 1 = the chip reported a failure / never finished
+    pop af
+    jp po,flash_run_noei
+    ei
+flash_run_noei:
+    pop af
+    out (P_BANKA),a
+    pop hl
+    pop de
+    pop bc
+    ld a,(v_tmp3)
+    rra                         ; CF = failed
+    ret
+
+flash_stub:
+    ld a,(v_tmp0)
+    ld d,a
+    ld a,(v_tmp1)
+    ld c,a
+    ld a,(v_tmp3)
+    ld e,a
+    ld a,PG_PRIV
+    out (P_BANKA),a
+    ld a,1
+    call $7FF0                  ; unlock (privileged code)
+    ld a,c
+    out (P_BANKA),a
+    ld a,$AA
+    ld ($4AAA),a
+    ld a,$55
+    ld ($4555),a
+    ld a,e
+    or a
+    jr nz,flash_stub_erase
+    ld a,$A0
+    ld ($4AAA),a
+    ld (hl),d
+    ld bc,0                     ; 65536 polls (~0.2 s) >> the chip's worst-case byte program time
+flash_stub_wait:                ; DQ7 data polling.  A bit that would go 0 -> 1 never verifies: the chip raises DQ5
+    ld a,(hl)                   ; (exceeded time) and stays in program mode until a reset command
+    xor d
+    and $80
+    jr z,flash_stub_ok
+    ld a,(hl)
+    and $20
+    jr nz,flash_stub_dq5
+    dec bc
+    ld a,b
+    or c
+    jr nz,flash_stub_wait
+    jr flash_stub_fail
+flash_stub_dq5:
+    ld a,(hl)                   ; DQ7 may have flipped together with DQ5: read once more
+    xor d
+    and $80
+    jr z,flash_stub_ok
+    jr flash_stub_fail
+flash_stub_erase:
+    ld a,$80
+    ld ($4AAA),a
+    ld a,$AA
+    ld ($4AAA),a
+    ld a,$55
+    ld ($4555),a
+    ld a,$30
+    ld (hl),a                   ; sector erase (address inside the sector)
+    ld e,0
+    ld bc,0                     ; 2^24 polls (~45 s) >> worst-case sector erase; DQ5 normally ends a failure much earlier
+flash_stub_ew:
+    ld a,(hl)
+    cp $FF
+    jr z,flash_stub_ok          ; erased bytes read $FF
+    and $20
+    jr nz,flash_stub_ew5
+    dec bc
+    ld a,b
+    or c
+    jr nz,flash_stub_ew
+    dec e
+    jr nz,flash_stub_ew
+    jr flash_stub_fail
+flash_stub_ew5:
+    ld a,(hl)
+    cp $FF
+    jr z,flash_stub_ok
+flash_stub_fail:
+    ld a,$F0
+    ld (hl),a                   ; reset command: back to read mode
+    ld e,1
+    jr flash_stub_done
+flash_stub_ok:
+    ld e,0
+flash_stub_done:
+    ld a,PG_PRIV
+    out (P_BANKA),a
+    xor a
+    call $7FF0                  ; lock again
+    ld a,e
+    ret
+flash_stub_end:
+#if (flash_stub_end-flash_stub) > 256
+.error "flash_stub does not fit in FLASHRAM ($8F00-$8FFF, NETBUF follows)"
+#endif
+
+flash_write_block:              ; A = page, HL = flash address ($4000..), DE = RAM source, BC = length. CF = refused
+    ld (v_ui0),a
+flash_write_block_l:
+    ld a,b
+    or c
+    ret z
+    push bc
+    ld a,(v_ui0)
+    ld b,a                      ; B = page
+    ld a,(de)                   ; A = value
+    call flash_write_byte
+    pop bc
+    ret c
+    inc de
+    inc hl
+    dec bc
+    ld a,h
+    cp $80
+    jr c,flash_write_block_l
+    ld h,$40                    ; crossed into the next page
+    ld a,(v_ui0)
+    inc a
+    ld (v_ui0),a
+    jr flash_write_block_l
+
+; ---- settings journal in flash (page $70, 16-byte records) -------------------------------------------------
+; Record: [$A5][9 settings bytes][xor-checksum][5 x $FF].  Append-only; when the page is full the 64 KB sector
+; is erased and the journal restarts (1024 saves per erase cycle).  RAM stays the working copy (battery backed);
+; the journal restores it after a RAM loss (battery removal, crash) and survives resets.
+REC_LEN     .equ 16
+REC_COUNT   .equ 1024
+WORKREC     .equ VARS+$A0
+
+settings_rec_sum:               ; HL = record -> A = checksum of bytes 1..9
+    push hl
+    push bc
+    inc hl
+    ld b,SETTINGS_LEN
+    ld a,$C3
+settings_rec_sum_l:
+    xor (hl)
+    rlca
+    inc hl
+    djnz settings_rec_sum_l
+    pop bc
+    pop hl
+    ret
+
+settings_flash_scan:            ; -> HL = slot address of the last valid record in the journal (CF=1 if none),
+    in a,(P_BANKA)              ;    DE = number of used slots (first free slot index)
+    push af
+    ld a,PG_SET
+    out (P_BANKA),a
+    ld hl,$4000
+    ld de,0
+    ld (v_wptr),de              ; last valid slot address (0 = none)
+settings_flash_scan_l:
+    ld a,(hl)
+    inc a
+    jr z,settings_flash_scan_free   ; $FF = free slot
+    ld a,(hl)
+    cp $A5
+    jr nz,settings_flash_scan_n
+    call settings_rec_sum
+    push hl
+    ld bc,SETTINGS_LEN+1
+    add hl,bc
+    cp (hl)
+    jr nz,settings_flash_scan_p
+    ld b,REC_LEN-SETTINGS_LEN-2 ; the padding must still be $FF (rejects foreign data that happens to pass the checksum)
+    ld a,$FF
+settings_flash_scan_pad:
+    inc hl
+    and (hl)
+    djnz settings_flash_scan_pad
+    inc a                       ; Z = padding intact
+settings_flash_scan_p:
+    pop hl
+    jr nz,settings_flash_scan_n
+    ld (v_wptr),hl
+settings_flash_scan_n:
+    ld bc,REC_LEN
+    add hl,bc
+    inc de
+    ld a,d
+    cp REC_COUNT>>8
+    jr c,settings_flash_scan_l
+settings_flash_scan_free:
+    pop af
+    out (P_BANKA),a
+    ld hl,(v_wptr)
+    ld a,h
+    or l
+    scf
+    ret z
+    or a
+    ret
+
+settings_slot_blank:            ; HL = slot address in the journal page -> Z = all 16 bytes are $FF
+    push bc
+    push hl
+    in a,(P_BANKA)
+    ld c,a
+    ld a,PG_SET
+    out (P_BANKA),a
+    ld b,REC_LEN
+    ld a,$FF
+settings_slot_blank_l:
+    and (hl)
+    inc hl
+    djnz settings_slot_blank_l
+    inc a                       ; Z = every byte was $FF
+    ld a,c
+    out (P_BANKA),a
+    pop hl
+    pop bc
+    ret
+
+settings_flash_load:            ; copy the last valid record into SETTINGS. CF = nothing found
+    call settings_flash_scan
+    ret c
+    ld a,PG_SET
+    ld de,SETTINGS
+    inc hl                      ; skip the marker
+    ld bc,SETTINGS_LEN
+    call bank_copy
+    or a
+    ret
+
+settings_flash_save:            ; append the current settings (only when they differ from the last record)
+    call settings_flash_scan
+    push de                     ; DE = first free slot index (when the journal has room)
+    jr c,settings_flash_save_new
+    ld de,SETTINGS              ; compare with the last record
+    inc hl
+    ld b,SETTINGS_LEN
+    in a,(P_BANKA)
+    push af
+    ld a,PG_SET
+    out (P_BANKA),a
+settings_flash_save_cmp:
+    ld a,(de)
+    cp (hl)
+    jr nz,settings_flash_save_diff
+    inc de
+    inc hl
+    djnz settings_flash_save_cmp
+    pop af
+    out (P_BANKA),a
+    pop de
+    ret                         ; identical: no wear
+settings_flash_save_diff:
+    pop af
+    out (P_BANKA),a
+settings_flash_save_new:
+    pop de
+    ld a,d
+    cp REC_COUNT>>8
+    jr c,settings_flash_save_room
+    ld b,PG_SET                 ; journal full: erase the sector and restart
+    call flash_erase_sector
+    ret c
+    ld de,0
+settings_flash_save_room:
+    ld l,e
+    ld h,d
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,hl                   ; slot * 16
+    ld bc,$4000
+    add hl,bc
+    call settings_slot_blank    ; foreign data (an old TI-OS archive) or a torn write: programming it would never verify
+    jr z,settings_flash_save_go
+    ld b,PG_SET
+    call flash_erase_sector     ; restart the journal on a clean sector
+    ret c
+    ld hl,$4000
+settings_flash_save_go:
+    push hl
+    ld hl,WORKREC               ; build the record in RAM
+    ld (hl),$A5
+    inc hl
+    ex de,hl
+    ld hl,SETTINGS
+    ld bc,SETTINGS_LEN
+    ldir
+    ld hl,WORKREC
+    call settings_rec_sum
+    ld (de),a
+    pop hl
+    ld a,PG_SET
+    ld de,WORKREC
+    ld bc,SETTINGS_LEN+2
+    jp flash_write_block

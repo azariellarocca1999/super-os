@@ -1,0 +1,117 @@
+; Opcode coverage program for the interpreter tests (not a game).
+    ld v0,200
+    ld v1,100
+    add v0,v1                   ; carry
+    ld v2,v0
+    ld v3,5
+    sub v2,v3
+    ld v4,3
+    ld v5,10
+    sub v4,v5                   ; borrow
+    ld v6,0xF1
+    shr v7,v6                   ; v7 = 0x78, vf = 1
+    ld v8,0x81
+    shl v9,v8                   ; v9 = 0x02, vf = 1
+    ld va,0x0F
+    ld vb,0x33
+    or va,vb
+    and vb,va
+    xor vc,va
+    ld vd,9
+    ld ve,20
+    subn vd,ve                  ; ve - vd
+    ld v0,7
+    ld v1,7
+    se v0,v1
+    ld v2,0
+    sne v0,v1
+    ld v3,0
+    se v0,7
+    ld v4,0
+    sne v0,7
+    ld v5,0
+    call sub1
+    call sub1
+    ld i,0x700
+    ld v0,254
+    ld b,v0                     ; BCD of 254
+    ld v3,[i]                   ; reload 4 bytes
+    ld i,0x780
+    ld v0,11
+    ld v1,22
+    ld v2,33
+    ld v3,44
+    ld [i],v3                   ; I += 4
+    ld v8,i_probe
+    ld i,0x780
+    ld v3,[i]
+    ld v0,0x0A
+    ld f,v0                     ; font digit A
+    drw v0,v0,5
+    ld v1,62
+    ld v2,30
+    drw v1,v2,5                 ; clipped at the right and bottom edges
+    drw v1,v2,5                 ; erase + collision
+    ld v1,3
+    ld v2,3
+    ld v0,1
+    ld f,v0
+    drw v1,v2,5
+    ld v1,5
+    ld v2,4
+    drw v1,v2,5                 ; overlapping: collision
+    ld v1,70                    ; coordinates wrap modulo 64 / 32
+    ld v2,40
+    ld v0,3
+    ld f,v0
+    drw v1,v2,5
+    rnd v0,0xFF
+    rnd v1,0x0F
+    rnd v2,0x3C
+    ld v3,5
+    skp v3                      ; key 5
+    ld v4,1
+    sknp v3
+    ld v5,1
+    ld v0,3
+    ld dt,v0
+    ld v6,dt
+    ld v7,9
+    ld st,v7
+    ld v0,0x40
+    add i,v0
+    ld v0,4
+    jp v0,tabl                  ; V0-relative jump
+    ld v9,1
+    ld v9,2
+tabl:
+    ld ve,0xAA
+    ld vf,0xBB
+    add ve,vf
+    ld vf,200
+    add vf,vf
+    cls
+    ld v0,0
+    ld v1,0
+    ld i,spr
+    drw v0,v1,3
+    ld v0,0xE
+    ld f,v0
+    ld v9,3
+    ld v1,v0
+    ld ve,9
+waitk:
+    ld v0,k
+    ld v8,0x77
+end:
+    jp end
+sub1:
+    add vc,1
+    call sub2
+    ret
+sub2:
+    add vd,2
+    ret
+i_probe .equ 7
+spr:
+    db 0xAA,0x55,0xFF

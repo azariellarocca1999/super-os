@@ -1,0 +1,854 @@
+; =============================================================================
+; SuperLink -- Super-OS <-> ESP32-S3 over the 2.5 mm link port.
+;
+;  Frame:  [SYNC=$53][CMD][LEN_L][LEN_H][PAYLOAD...][CRC8]      crc8 poly $07 over CMD..PAYLOAD
+;  Every frame is answered by one byte: ACK ($06) / NACK ($15); the sender retries up to 3 times.
+;  Replies are streams of RSP_MORE ... RSP_LAST frames; concatenated payloads = one ZX0 stream.
+;
+;  Physical layer "safe" (TI-compatible handshake, speed independent, used by every
+;  emulator test): sender pulls tip low for a 0 / ring low for a 1, the receiver acknowledges
+;  by pulling the OTHER line, the sender releases, the receiver releases.
+;
+;  Wake-on-DBus: with the ESP32 in deep sleep the calculator pulls TIP low for 50 ms, releases,
+;  and the ESP answers (after its boot) with the two raw bytes $A5 $5A (ESP_READY).
+;  After 180 s (setting) without traffic the calculator sends CMD_SLEEP and the ESP deep-sleeps.
+; =============================================================================
+
+SL_TMO      .equ 12000          ; polling iterations per handshake step
+EV_ESPSLP   .equ $0020
+
+cnt_inc:                        ; HL = address of a 16-bit counter (preserves everything else)
+    push af
+    push hl
+    inc (hl)
+    jr nz,cnt_inc_x
+    inc hl
+    inc (hl)
+cnt_inc_x:
+    pop hl
+    pop af
+    ret
+
+; ---- bit / byte layer -----------------------------------------------------------------------------
+sl_send_byte:                   ; A = byte. CF = timeout.  Dispatches to the turbo layer when active.
+    push bc
+    ld b,a
+    ld a,(v_turbo)
+    or a
+    ld a,b
+    pop bc
+    jp nz,tl_send_byte
+sl_send_byte_safe:
+    push bc
+    push de
+    ld c,a
+    ld b,8
+sl_send_byte_bit:
+    rr c
+    ld a,1                      ; 0 -> pull tip
+    jr nc,sl_send_byte_p
+    ld a,2                      ; 1 -> pull ring
+sl_send_byte_p:
+    out (P_LINK),a
+    ld de,SL_TMO*4
+sl_send_byte_ack:
+    in a,(P_LINK)
+    and 3
+    jr z,sl_send_byte_acked     ; both low: the receiver acknowledged
+    dec de
+    ld a,d
+    or e
+    jr nz,sl_send_byte_ack
+    jr sl_send_byte_fail
+sl_send_byte_acked:
+    xor a
+    out (P_LINK),a              ; release
+    ld de,SL_TMO*4
+sl_send_byte_rel:
+    in a,(P_LINK)
+    and 3
+    cp 3
+    jr z,sl_send_byte_next
+    dec de
+    ld a,d
+    or e
+    jr nz,sl_send_byte_rel
+    jr sl_send_byte_fail
+sl_send_byte_next:
+    djnz sl_send_byte_bit
+    pop de
+    pop bc
+    or a
+    ret
+sl_send_byte_fail:
+    xor a
+    out (P_LINK),a
+    ld hl,v_cnt_tmo
+    call cnt_inc
+    pop de
+    pop bc
+    scf
+    ret
+
+sl_recv_byte:                   ; -> A = byte. DE = first-bit timeout (iterations). CF = timeout
+    ld a,(v_turbo)
+    or a
+    jp nz,tl_recv_byte
+sl_recv_byte_safe:
+    push bc
+    ld b,8
+    ld c,0
+sl_recv_byte_bit:
+    push de
+sl_recv_byte_w:
+    in a,(P_LINK)
+    and 3
+    cp 3
+    jr nz,sl_recv_byte_got
+    dec de
+    ld a,d
+    or e
+    jr nz,sl_recv_byte_w
+    pop de
+    jr sl_recv_byte_fail
+sl_recv_byte_got:
+    pop de
+    ld de,SL_TMO*4              ; later bits: fixed timeout
+    cp 2                        ; tip low -> bit 0
+    jr z,sl_recv_byte_b0
+    cp 1                        ; ring low -> bit 1
+    jr z,sl_recv_byte_b1
+    jr sl_recv_byte_fail        ; both low: collision
+sl_recv_byte_b0:
+    ld a,2                      ; ack: pull ring
+    out (P_LINK),a
+    srl c                       ; shift in a 0 (LSB first)
+sl_recv_byte_r0:
+    in a,(P_LINK)
+    bit 0,a                     ; wait for the sender to release tip
+    jr nz,sl_recv_byte_done
+    dec de
+    ld a,d
+    or e
+    jr nz,sl_recv_byte_r0
+    jr sl_recv_byte_fail
+sl_recv_byte_b1:
+    ld a,1                      ; ack: pull tip
+    out (P_LINK),a
+    srl c                       ; shift in a 1
+    set 7,c
+sl_recv_byte_r1:
+    in a,(P_LINK)
+    bit 1,a                     ; wait for the sender to release ring
+    jr nz,sl_recv_byte_done
+    dec de
+    ld a,d
+    or e
+    jr nz,sl_recv_byte_r1
+    jr sl_recv_byte_fail
+sl_recv_byte_done:
+    xor a
+    out (P_LINK),a              ; drop the ack
+    ld de,SL_TMO*4
+    djnz sl_recv_byte_bit
+    ld a,c
+    pop bc
+    or a
+    ret
+sl_recv_byte_fail:
+    xor a
+    out (P_LINK),a
+    ld hl,v_cnt_tmo
+    call cnt_inc
+    pop bc
+    scf
+    ret
+
+
+; ---- turbo byte layer ---------------------------------------------------------------------------------------------
+; Calculator-clocked synchronous transfer.  RING (D1) = clock, driven by the calculator only; TIP (D0) = data.
+;  calc -> ESP : the calculator sets TIP (pulled low = 0, released = 1), pulls RING low, releases RING.  The ESP samples TIP
+;                on the clock edge.  Eight bits, LSB first, no acknowledge (the frame layer's ACK byte covers it).
+;  ESP -> calc : the ESP pulls TIP low = "byte ready" (start bit).  The calculator then clocks nine pulses: on every falling
+;                edge the ESP puts the next bit on TIP (8 data bits LSB first, then a stop bit = released); the calculator
+;                reads TIP while the clock is low.  After the stop bit TIP is high, so the next start bit is unambiguous.
+; Phase lengths are TL_TX / TL_RX loop counts (16 T-states each): (TX 1 / RX 3+1 -> ~100-115 kbit/s on the 15 MHz Z80; if the real cable is slow use 2 / 4+2 = ~84 kbit/s).  Hardware tuning knob.
+TL_TX       .equ 1
+TL_RXLOW    .equ 3
+TL_RXHIGH   .equ 1
+
+tl_send_byte:                   ; A = byte.  CF never set (the ESP cannot stall a calculator-clocked write)
+    push bc
+    push de
+    ld c,a
+    ld b,8
+tl_sb_bit:
+    rr c
+    ld a,1                      ; data 0 -> pull tip
+    jr nc,tl_sb_d
+    xor a                       ; data 1 -> release tip
+tl_sb_d:
+    ld d,a
+    out (P_LINK),a              ; data valid, clock high
+    ld e,TL_TX
+tl_sb_w1:
+    dec e
+    jr nz,tl_sb_w1
+    ld a,d
+    or 2
+    out (P_LINK),a              ; clock low
+    ld e,TL_TX
+tl_sb_w2:
+    dec e
+    jr nz,tl_sb_w2
+    ld a,d
+    out (P_LINK),a              ; clock high again (the ESP samples on this edge)
+    ld e,TL_TX
+tl_sb_w3:
+    dec e
+    jr nz,tl_sb_w3
+    djnz tl_sb_bit
+    xor a
+    out (P_LINK),a              ; release everything
+    pop de
+    pop bc
+    or a
+    ret
+
+tl_recv_byte:                   ; DE = start-bit timeout (iterations) -> A = byte.  CF = timeout / framing error
+    push bc
+    push de
+tl_rb_w:
+    in a,(P_LINK)
+    and 1
+    jr z,tl_rb_go               ; tip low = byte ready
+    dec de
+    ld a,d
+    or e
+    jr nz,tl_rb_w
+    jr tl_rb_fail
+tl_rb_go:
+    ld b,8
+    ld c,0
+tl_rb_bit:
+    ld a,2
+    out (P_LINK),a              ; clock low: the ESP presents the next bit
+    ld e,TL_RXLOW
+tl_rb_w1:
+    dec e
+    jr nz,tl_rb_w1
+    in a,(P_LINK)
+    rra                         ; carry = tip level
+    rr c
+    xor a
+    out (P_LINK),a              ; clock high
+    ld e,TL_RXHIGH
+tl_rb_w2:
+    dec e
+    jr nz,tl_rb_w2
+    djnz tl_rb_bit
+    ld a,2                      ; stop bit
+    out (P_LINK),a
+    ld e,TL_RXLOW
+tl_rb_w3:
+    dec e
+    jr nz,tl_rb_w3
+    in a,(P_LINK)
+    ld b,a
+    xor a
+    out (P_LINK),a
+    bit 0,b
+    jr z,tl_rb_fail             ; stop bit must be high
+    ld a,c
+    pop de
+    pop bc
+    or a
+    ret
+tl_rb_fail:
+    xor a
+    out (P_LINK),a
+    ld hl,v_cnt_tmo
+    call cnt_inc
+    pop de
+    pop bc
+    scf
+    ret
+
+sl_crc:                         ; A = byte (preserved), updates v_crc (table driven, poly $07)
+    push af
+    push bc
+    push hl
+    ld b,a
+    ld a,(v_crc)
+    xor b
+    ld c,a
+    ld b,0
+    ld hl,crc8tab
+    add hl,bc
+    ld a,(hl)
+    ld (v_crc),a
+    pop hl
+    pop bc
+    pop af
+    ret
+
+sl_wait_start:                  ; HL = ticks to wait for the peer to start a bit (poll ~1 ms, then HALT per tick). CF = timeout
+    push bc
+    ld bc,700
+sl_ws_fast:
+    in a,(P_LINK)
+    and 3
+    cp 3
+    jr nz,sl_wait_start_go
+    dec bc
+    ld a,b
+    or c
+    jr nz,sl_ws_fast
+sl_wait_start_l:
+    in a,(P_LINK)
+    and 3
+    cp 3
+    jr nz,sl_wait_start_go
+    ld a,(v_lnkabort)           ; the user cancelled the request (CLEAR)
+    or a
+    jr nz,sl_wait_start_x
+    push hl
+    ld bc,1
+    call task_sleep
+    pop hl
+    dec hl
+    ld a,h
+    or l
+    jr nz,sl_wait_start_l
+sl_wait_start_x:
+    pop bc
+    scf
+    ret
+sl_wait_start_go:
+    pop bc
+    or a
+    ret
+
+; ---- frame layer ----------------------------------------------------------------------------------
+; A = cmd, HL = payload, BC = length.  CF = failed after 3 tries.
+sl_send_frame:
+    ld (v_tmp0),a
+    ld (v_gx),hl                ; payload pointer (scratch is per task)
+    ld (v_gw),bc                ; length
+    ld a,3
+    ld (v_tmp2),a               ; tries
+sl_send_frame_try:
+    xor a
+    ld (v_crc),a
+    ld a,SL_SYNC
+    call sl_send_byte
+    jr c,sl_send_frame_bad
+    ld a,(v_tmp0)
+    call sl_crc
+    call sl_send_byte
+    jr c,sl_send_frame_bad
+    ld a,(v_gw)
+    call sl_crc
+    call sl_send_byte
+    jr c,sl_send_frame_bad
+    ld a,(v_gw+1)
+    call sl_crc
+    call sl_send_byte
+    jr c,sl_send_frame_bad
+    ld hl,(v_gx)
+    ld bc,(v_gw)
+    ld a,b
+    or c
+    jr z,sl_send_frame_crc
+sl_send_frame_l:
+    ld a,(hl)
+    call sl_crc
+    call sl_send_byte
+    jr c,sl_send_frame_bad
+    inc hl
+    dec bc
+    ld a,b
+    or c
+    jr nz,sl_send_frame_l
+sl_send_frame_crc:
+    ld a,(v_crc)
+    call sl_send_byte
+    jr c,sl_send_frame_bad
+    ld de,SL_TMO*8              ; wait for ACK / NACK
+    call sl_recv_byte
+    jr c,sl_send_frame_bad
+    cp SL_ACK
+    jr z,sl_send_frame_ok
+sl_send_frame_bad:
+    ld hl,v_cnt_retry
+    call cnt_inc
+    ld a,(v_tmp2)
+    dec a
+    ld (v_tmp2),a
+    jr nz,sl_send_frame_try
+    scf
+    ret
+sl_send_frame_ok:
+    ld hl,v_cnt_frames
+    call cnt_inc
+    or a
+    ret
+
+; Receive one frame into NETBUF -> v_ptype, v_plen (16 bit).  DE = first-bit timeout.  CF = failed.
+sl_recv_frame:
+    ld a,3
+    ld (v_tmp2),a
+sl_recv_frame_try:
+    xor a
+    ld (v_crc),a
+sl_recv_frame_sof:
+    call sl_recv_byte
+    jp c,sl_recv_frame_fail
+    cp SL_SYNC
+    jr nz,sl_recv_frame_sof     ; resync on garbage
+    ld de,SL_TMO*4
+    call sl_recv_byte
+    jr c,sl_recv_frame_fail
+    ld (v_ptype),a
+    call sl_crc
+    ld de,SL_TMO*4
+    call sl_recv_byte
+    jr c,sl_recv_frame_fail
+    ld (v_plen),a
+    call sl_crc
+    ld de,SL_TMO*4
+    call sl_recv_byte
+    jr c,sl_recv_frame_fail
+    ld (v_plen+1),a
+    call sl_crc
+    ld bc,(v_plen)
+    ld hl,NETBUF
+    ld a,b
+    or c
+    jr z,sl_recv_frame_c
+    ld a,b
+    cp 2
+    jr nc,sl_recv_frame_nack    ; > 511: refuse
+sl_recv_frame_l:
+    ld de,SL_TMO*4
+    call sl_recv_byte
+    jr c,sl_recv_frame_fail
+    ld (hl),a
+    call sl_crc
+    inc hl
+    dec bc
+    ld a,b
+    or c
+    jr nz,sl_recv_frame_l
+sl_recv_frame_c:
+    ld de,SL_TMO*4
+    call sl_recv_byte
+    jr c,sl_recv_frame_fail
+    ld b,a
+    ld a,(v_crc)
+    cp b
+    jr nz,sl_recv_frame_nack
+    ld a,SL_ACK
+    call sl_send_byte
+    or a
+    ret
+sl_recv_frame_nack:
+    ld hl,v_cnt_crc
+    call cnt_inc
+    ld a,SL_NACK
+    call sl_send_byte
+    ld a,(v_tmp2)
+    dec a
+    ld (v_tmp2),a
+    jr z,sl_recv_frame_fail
+    xor a
+    ld (v_crc),a
+    ld de,SL_TMO*8
+    jp sl_recv_frame_sof
+sl_recv_frame_fail:
+    scf
+    ret
+
+; ---- link task ---------------------------------------------------------------------------------------
+link_task:
+    ld hl,EV_LINK|EV_LNKREQ|EV_ESPSLP
+    call task_wait
+    bit 1,a
+    jr nz,link_task_req
+    bit 5,a
+    jr nz,link_task_slp
+    call link_async             ; the ESP32 started talking (ESP_READY / status / notification)
+    call link_end
+    jr link_task
+link_task_req:
+    call link_do_request
+    call link_wake_retry
+    call link_end
+    ld hl,EV_LNKDONE
+    call event_post
+    jr link_task
+link_task_slp:
+    call link_do_sleep
+    call link_end
+    jr link_task
+
+link_end:                       ; release the link: clear stale link events, re-arm the irq
+    di
+    ld a,(v_flags)
+    res F_LINK,a
+    ld (v_flags),a
+    ld hl,(v_evflags)
+    ld a,l
+    and $FF-1                   ; drop EV_LINK
+    ld l,a
+    ld (v_evflags),hl
+    ld a,INT_RUN
+    ld (v_runmask),a
+    out (P_INTMASK),a
+    ei
+    ret
+
+link_async:                     ; unsolicited traffic from the ESP32
+    ld de,SL_TMO*4
+    call sl_recv_byte
+    ret c
+    cp $A5
+    jr z,link_async_ready
+    cp SL_SYNC
+    jr nz,link_async_x
+    ; a frame whose SYNC we already consumed: rebuild the receive state
+    xor a
+    ld (v_crc),a
+    ld a,3
+    ld (v_tmp2),a
+    ld de,SL_TMO*4
+    call sl_recv_byte
+    ret c
+    ld (v_ptype),a
+    call sl_crc
+    ld de,SL_TMO*4
+    call sl_recv_byte
+    ret c
+    ld (v_plen),a
+    call sl_crc
+    ld de,SL_TMO*4
+    call sl_recv_byte
+    ret c
+    ld (v_plen+1),a
+    call sl_crc
+    ld bc,(v_plen)
+    ld hl,NETBUF
+    ld a,b
+    or c
+    jr z,link_async_crc
+    ld a,b
+    cp 2
+    ret nc
+link_async_l:
+    ld de,SL_TMO*4
+    call sl_recv_byte
+    ret c
+    ld (hl),a
+    call sl_crc
+    inc hl
+    dec bc
+    ld a,b
+    or c
+    jr nz,link_async_l
+link_async_crc:
+    ld de,SL_TMO*4
+    call sl_recv_byte
+    ret c
+    ld b,a
+    ld a,(v_crc)
+    cp b
+    jr nz,link_async_nack
+    ld a,SL_ACK
+    call sl_send_byte
+    jp link_dispatch
+link_async_nack:
+    ld a,SL_NACK
+    jp sl_send_byte
+link_async_ready:
+    ld de,SL_TMO*4
+    call sl_recv_byte
+    ret c
+    cp $5A
+    ret nz
+    ld a,1
+    ld (v_esp),a                ; ESP_READY
+link_async_x:
+    ret
+
+link_dispatch:                  ; frame in NETBUF: v_ptype / v_plen
+    ld a,(v_ptype)
+    cp RSP_NOTIFY
+    jr nz,link_dispatch_s
+    ld hl,v_notif
+    inc (hl)
+    ret
+link_dispatch_s:
+    cp CMD_STATUS
+    jr nz,link_dispatch_t
+    ld a,(NETBUF)               ; [state][rssi]
+    ld (v_esp),a
+    ld a,(NETBUF+1)
+    ld (v_rssi),a
+    ret
+link_dispatch_t:
+    cp CMD_TIME
+    ret nz
+    ld a,(NETBUF)               ; [hour][minute]
+    ld h,a
+    ld a,(NETBUF+1)
+    ld l,a
+    jp rtc_set
+
+; ESP32 asleep? pulse TIP low 50 ms and wait for ESP_READY ($A5 $5A).  CF = no answer.
+link_wake_esp:
+    ld a,(v_esp)
+    or a
+    ret nz                      ; already awake
+    ld a,1
+    out (P_LINK),a
+    ld bc,6                     ; ~55 ms
+    call task_sleep
+    xor a
+    out (P_LINK),a
+    ld hl,TICK_HZ*5             ; ESP32 boot + ready: up to 5 s
+    call sl_wait_start
+    ret c
+    ld de,SL_TMO*4
+    call sl_recv_byte
+    ret c
+    cp $A5
+    jr nz,link_wake_esp_f
+    ld de,SL_TMO*4
+    call sl_recv_byte
+    ret c
+    cp $5A
+    jr nz,link_wake_esp_f
+    ld a,1
+    ld (v_esp),a
+    xor a
+    ld (v_turbo),a
+    ret
+link_wake_esp_f:
+    scf
+    ret
+
+link_do_request:
+    ld a,1
+    ld (v_lnkstat),a
+    call link_wake_esp
+    jp c,link_do_request_f
+    call link_send_req
+    jp c,link_do_request_fs
+    ld hl,RESPBUF
+    ld (v_lnkresp),hl           ; running write pointer
+    ld hl,TICK_HZ*20            ; first reply may take long (LLM)
+link_do_request_w:
+    call sl_wait_start
+    jp c,link_do_request_f
+    ld de,SL_TMO*4
+    call sl_recv_frame
+    jp c,link_do_request_f
+    ld a,(v_ptype)
+    cp RSP_ERR
+    jp z,link_do_request_f
+    cp RSP_NOTIFY
+    jr nz,link_do_request_d
+    call link_dispatch
+    ld hl,TICK_HZ*20
+    jr link_do_request_w
+link_do_request_d:
+    cp CMD_STATUS
+    jr nz,link_do_request_data
+    call link_dispatch
+    ld hl,TICK_HZ*20
+    jr link_do_request_w
+link_do_request_data:
+    ld bc,(v_plen)
+    ld a,b
+    or c
+    jr z,link_do_request_c
+    ld hl,NETBUF
+    ld de,(v_lnkresp)
+    ldir
+    ld (v_lnkresp),de
+link_do_request_c:
+    ld a,(v_ptype)
+    cp RSP_LAST
+    jr z,link_do_request_ok
+    ld hl,TICK_HZ*10            ; next chunk
+    jr link_do_request_w
+link_do_request_ok:
+    ld a,(v_lnkreq)
+    cp CMD_TURBO
+    jr nz,link_do_request_ok2
+    ld hl,(v_lnkptr)            ; the ESP32 has acked our ACK: both ends switch now
+    ld a,(hl)
+    ld (v_turbo),a
+link_do_request_ok2:
+    ld hl,(v_lnkresp)
+    ld de,RESPBUF
+    or a
+    sbc hl,de
+    ld (v_lnkresp),hl           ; total compressed length
+    ld a,2
+    ld (v_lnkstat),a
+    ld hl,0
+    ld (v_espidle),hl
+    ret
+link_do_request_f:
+    ld a,3
+    ld (v_lnkstat),a
+    xor a
+    ld (v_turbo),a              ; a failed exchange: fall back to the safe layer (the ESP32 reverts after 3 s of silence)
+    ret
+link_do_request_fs:             ; the request frame itself was not accepted (status 4: see link_wake_retry)
+    call link_do_request_f
+    ld a,4
+    ld (v_lnkstat),a
+    ret
+
+link_wake_retry:                ; link task only (link_direct keeps a fast failure for streaming loops).  The frame was refused by an
+    ld a,(v_lnkstat)            ; ESP32 we believed awake: it may have deep-slept without telling us (its own idle timer, a reset),
+    cp 4                        ; and SYNC starts with a RING bit, which never wakes it.  Pulse TIP and try once more.
+    ret nz
+    ld a,(v_lnkabort)
+    or a
+    ret nz                      ; the user cancelled
+    ld a,(v_esp)
+    or a
+    ret z                       ; it was believed asleep: link_wake_esp already pulsed
+    xor a
+    ld (v_esp),a
+    call link_do_request        ; wake pulse + ESP_READY, then the frame again
+    ld a,(v_esp)
+    or a
+    ret nz
+    inc a
+    ld (v_esp),a                ; no ESP_READY: an awake chip does not send it (a transient error): keep believing it is awake
+    ret
+
+link_send_req:                  ; the pending request (v_lnkreq / v_lnkptr / v_lnklen) as one frame.  CF = failed
+    ld hl,(v_lnkptr)
+    ld a,(v_lnklen)
+    ld c,a
+    ld b,0
+    ld a,(v_lnkreq)
+    jp sl_send_frame
+
+link_do_sleep:                  ; CMD_SLEEP: the ESP32 acknowledges and deep-sleeps
+    ld a,(v_esp)
+    or a
+    ret z
+    ld hl,NETBUF
+    ld bc,0
+    ld a,CMD_SLEEP
+    call sl_send_frame
+    xor a
+    ld (v_esp),a
+    ld (v_turbo),a
+    ret
+
+link_esp_sleep:                 ; request from any task: ask the link task to put the ESP32 to sleep
+    ld a,(v_esp)
+    or a
+    ret z
+    ld hl,EV_ESPSLP
+    call event_post
+    ld bc,TICK_HZ/2
+    jp task_sleep
+
+link_request:                   ; A = cmd, HL = payload, B = len -> HL = RESPBUF, BC = length, CF = failed
+    ld (v_lnkreq),a
+    ld a,b
+    ld (v_lnklen),a
+    ld (v_lnkptr),hl
+    xor a
+    ld (v_lnkstat),a
+    ld (v_lnkabort),a
+    ld hl,EV_LNKREQ
+    call event_post
+    call key_scan               ; apps send their exit requests (game stop, turbo off) while CLEAR is still held:
+    sub K_CLEAR                 ; only a NEW press of CLEAR cancels.  A = 0 (disarmed) when CLEAR is already down
+    push af                     ; armed flag on the stack (v_tmp* belong to the caller)
+link_request_w:                 ; poll for completion so that CLEAR can cancel a wait (wake-up, LLM thinking, no ESP32)
+    di
+    ld hl,(v_evflags)
+    bit 2,l                     ; EV_LNKDONE
+    jr nz,link_request_d
+    ei
+    call key_scan
+    cp K_CLEAR
+    jr nz,link_request_arm
+    pop af
+    push af
+    or a
+    jr nz,link_request_x        ; CLEAR pressed after the request started
+    jr link_request_s
+link_request_arm:
+    pop af
+    ld a,1                      ; CLEAR is up: a later press cancels
+    push af
+link_request_s:
+    ld bc,2
+    call task_sleep
+    jr link_request_w
+link_request_x:
+    pop af
+    ld a,1
+    ld (v_lnkabort),a           ; the link task stops at its next poll (within a tick); then wait for it
+    ld hl,EV_LNKDONE
+    call task_wait
+link_request_r:                 ; wait for CLEAR to be released so the key is not seen again by the app
+    call key_scan
+    or a
+    jr z,link_request_f
+    ld bc,1
+    call task_sleep
+    jr link_request_r
+link_request_d:
+    ei
+    pop af                      ; drop the armed flag
+    ld hl,EV_LNKDONE
+    call task_wait              ; consumes the event
+    ld a,(v_lnkstat)
+    cp 2
+    jr nz,link_request_f
+    ld hl,RESPBUF
+    ld bc,(v_lnkresp)
+    or a
+    ret
+link_request_f:
+    scf
+    ret
+
+link_direct:                    ; A = cmd, HL = payload, B = len -> HL = RESPBUF, BC = length, CF = failed.
+                                ; Same exchange as link_request but done in the caller's context: no link-task round trip
+                                ; (two scheduler ticks), which is what limits the frame rate of streamed games.
+    ld (v_lnkreq),a
+    ld a,b
+    ld (v_lnklen),a
+    ld (v_lnkptr),hl
+    xor a
+    ld (v_lnkabort),a
+    di
+    ld a,INT_RUN_NL            ; keep the link-activity irq from waking the link task meanwhile
+    ld (v_runmask),a
+    out (P_INTMASK),a
+    ei
+    call link_do_request
+    call link_end
+    ld a,(v_lnkstat)
+    cp 2
+    jr nz,link_direct_f
+    ld hl,RESPBUF
+    ld bc,(v_lnkresp)
+    or a
+    ret
+link_direct_f:
+    scf
+    ret

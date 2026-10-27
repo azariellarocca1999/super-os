@@ -1,0 +1,233 @@
+; =============================================================================
+; Text viewer: wraps TEXTBUF (ends at v_vend, zero terminated) at the current font width into
+; LINETAB, then scrolls.  UP/DOWN line, LEFT/RIGHT page, ZOOM toggles the 4x6 / 6x8 font, CLEAR exits.
+; =============================================================================
+viewer:
+    xor a
+    call ram_page             ; text buffers live in RAM page 0 of the $C000 window
+viewer_rewrap:
+    call ui_cols
+    ld (v_wcols),a
+    ld a,(v_font)
+    ld b,9
+    or a
+    jr z,viewer_nv
+    ld b,7
+viewer_nv:
+    ld a,b
+    ld (v_nvis),a
+    call wrap_text
+    ld hl,0
+    ld (v_vline),hl
+viewer_draw:
+    call gfx_clear
+    call status_draw
+    ld hl,(v_vline)
+    ld a,(v_nvis)
+    ld (v_ui2),a
+    ld a,8
+    ld (v_ui0),a                ; y
+viewer_row:
+    push hl
+    ld de,(v_vcount)
+    or a
+    sbc hl,de
+    pop hl
+    jr nc,viewer_next
+    push hl
+    call line_ptr               ; HL = start, DE = end of this line
+    ld a,(v_ui0)
+    ld c,a
+    call draw_line
+    pop hl
+viewer_next:
+    inc hl
+    ld a,(v_font)
+    or a
+    ld a,(v_ui0)
+    jr nz,viewer_big
+    add a,6
+    jr viewer_y
+viewer_big:
+    add a,8
+viewer_y:
+    ld (v_ui0),a
+    ld a,(v_ui2)
+    dec a
+    ld (v_ui2),a
+    jr nz,viewer_row
+    call lcd_blit
+    call wait_key
+    cp K_CLEAR
+    ret z
+    cp K_ON
+    ret z
+    cp K_ZOOM
+    jr nz,viewer_k1
+    call font_toggle
+    jp viewer_rewrap
+viewer_k1:
+    cp K_DOWN
+    jr z,viewer_down
+    cp K_UP
+    jr z,viewer_up
+    cp K_RIGHT
+    jr z,viewer_pgdn
+    cp K_LEFT
+    jr z,viewer_pgup
+    jp viewer_draw
+viewer_down:
+    ld hl,(v_vline)
+    inc hl
+    jr viewer_set
+viewer_up:
+    ld hl,(v_vline)
+    ld a,h
+    or l
+    jp z,viewer_draw
+    dec hl
+    jr viewer_set
+viewer_pgdn:
+    ld hl,(v_vline)
+    ld de,6
+    add hl,de
+    jr viewer_set
+viewer_pgup:
+    ld hl,(v_vline)
+    ld de,6
+    or a
+    sbc hl,de
+    jr nc,viewer_set
+    ld hl,0
+viewer_set:
+    ld de,(v_vcount)
+    push hl
+    or a
+    sbc hl,de
+    pop hl
+    jr c,viewer_ok
+    ld hl,(v_vcount)
+    ld a,h
+    or l
+    jr z,viewer_ok
+    dec hl
+viewer_ok:
+    ld (v_vline),hl
+    jp viewer_draw
+
+line_ptr:                       ; HL = line index -> HL = start, DE = next line start
+    add hl,hl
+    ld de,LINETAB
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    inc hl
+    ld a,(hl)
+    inc hl
+    ld h,(hl)
+    ld l,a
+    ex de,hl
+    ret
+
+draw_line:                      ; HL = start, DE = end, C = y
+    ld b,0
+draw_line_l:
+    or a
+    push hl
+    sbc hl,de
+    pop hl
+    ret nc
+    ld a,(hl)
+    inc hl
+    cp 10
+    ret z
+    or a
+    ret z
+    cp ' '
+    jr nz,draw_line_p
+    ld a,b
+    or a
+    jr z,draw_line_l            ; skip a leading space
+    ld a,' '
+draw_line_p:
+    push de
+    push hl
+    call putchar
+    pop hl
+    pop de
+    inc b
+    ld a,(v_wcols)
+    cp b
+    jr nz,draw_line_l
+    ret
+
+; Word wrap TEXTBUF..v_vend into LINETAB at v_wcols columns; sets v_vcount.
+wrap_text:
+    ld hl,0
+    ld (v_vcount),hl
+    ld hl,TEXTBUF
+    ld de,LINETAB
+wrap_l:
+    ld a,(hl)
+    or a
+    jr z,wrap_done
+    ld a,l
+    ld (de),a
+    inc de
+    ld a,h
+    ld (de),a
+    inc de
+    push hl
+    ld hl,(v_vcount)
+    inc hl
+    ld (v_vcount),hl
+    pop hl
+    ld a,(v_wcols)
+    ld b,a                      ; columns left
+    ld c,0                      ; C = offset just after the last space (0 = none)
+    push hl                     ; line start
+wrap_s:
+    ld a,(hl)
+    or a
+    jr z,wrap_end0
+    cp 10
+    jr z,wrap_nl
+    cp ' '
+    jr nz,wrap_ns
+    ld a,(v_wcols)
+    sub b
+    inc a
+    ld c,a
+wrap_ns:
+    inc hl
+    djnz wrap_s
+    ld a,(hl)                   ; the line is full: does it end naturally?
+    cp ' '
+    jr z,wrap_atspace
+    cp 10
+    jr z,wrap_nl
+    ld a,c
+    or a
+    jr z,wrap_hard
+    pop hl                      ; break after the last space
+    ld b,0
+    add hl,bc
+    jr wrap_l
+wrap_atspace:
+    inc hl
+wrap_hard:
+    pop af
+    jr wrap_l
+wrap_nl:
+    inc hl
+wrap_end0:
+    pop af
+    jr wrap_l
+wrap_done:
+    ld a,l
+    ld (de),a
+    inc de
+    ld a,h
+    ld (de),a                   ; sentinel: end of text
+    ret

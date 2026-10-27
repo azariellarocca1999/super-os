@@ -1,0 +1,412 @@
+; =============================================================================
+; SNAKE (native).  22 x 13 field of 4-pixel cells inside a frame, walls and your own tail are deadly, the snake speeds up as you eat.
+;   arrows steer (no instant reversal, one turn per step is queued), MODE / CLEAR pause.   Score = apples eaten.
+; =============================================================================
+sn_dir      .equ GV+0           ; direction of the last step: 0 up, 1 right, 2 down, 3 left
+sn_nd       .equ GV+1           ; queued direction
+sn_hx       .equ GV+2
+sn_hy       .equ GV+3
+sn_head     .equ GV+4           ; ring buffer index of the head
+sn_tail     .equ GV+5
+sn_len      .equ GV+6
+sn_ax       .equ GV+7
+sn_ay       .equ GV+8
+sn_cnt      .equ GV+9           ; frames since the last step
+sn_int      .equ GV+10          ; frames per step
+sn_score    .equ GV+11          ; 16-bit
+sn_dead     .equ GV+13
+sn_grow     .equ GV+14
+sn_ring     .equ $A600          ; 256 x (x, y)
+sn_grid     .equ $A800          ; 22 x 13 occupancy bytes
+SN_W        .equ 22
+SN_H        .equ 13
+
+game_snake:
+    ld a,1
+    ld b,4
+    call gl_init
+sn_restart:
+    call sn_reset
+    call sn_drawall
+    call gl_flush
+sn_loop:
+    call gl_tick
+    ld a,(gl_press)
+    and GK_Q|GK_P
+    jr z,sn_nop
+    call gl_pause
+    jr c,sn_quit
+    call sn_drawall
+    call gl_flush
+sn_nop:
+    call sn_keys
+    ld a,(sn_cnt)
+    inc a
+    ld (sn_cnt),a
+    ld hl,sn_int
+    cp (hl)
+    jr c,sn_loop
+    xor a
+    ld (sn_cnt),a
+    call sn_step
+    ld a,(sn_dead)
+    or a
+    jr nz,sn_over
+    call gl_flush
+    jr sn_loop
+sn_quit:
+    jp gl_exit
+sn_over:
+    call gl_flush
+    ld hl,(sn_score)
+    call gl_gameover
+    jr c,sn_quit
+    jp sn_restart
+
+sn_reset:
+    ld hl,sn_grid
+    ld de,sn_grid+1
+    ld bc,SN_W*SN_H-1
+    ld (hl),0
+    ldir
+    xor a
+    ld (sn_dead),a
+    ld (sn_cnt),a
+    ld (sn_grow),a
+    ld hl,0
+    ld (sn_score),hl
+    ld a,10
+    ld (sn_int),a
+    ld a,1
+    ld (sn_dir),a
+    ld (sn_nd),a
+    ld a,6
+    ld (sn_hy),a
+    xor a
+    ld (sn_head),a
+    ld (sn_tail),a
+    ld a,3                      ; three segments: (8,6) (9,6) (10,6) = head
+    ld (sn_len),a
+    ld a,8
+    ld (sn_hx),a
+    call sn_push
+    ld a,9
+    ld (sn_hx),a
+    call sn_push
+    ld a,10
+    ld (sn_hx),a
+    call sn_push
+    jp sn_apple
+
+sn_push:                        ; the head position becomes a new ring entry and is marked in the grid
+    ld a,(sn_head)
+    ld e,a
+    ld d,0
+    ld hl,sn_ring
+    add hl,de
+    add hl,de
+    ld a,(sn_hx)
+    ld (hl),a
+    inc hl
+    ld a,(sn_hy)
+    ld (hl),a
+    ld a,(sn_head)
+    inc a
+    ld (sn_head),a
+    ld a,(sn_hx)
+    ld b,a
+    ld a,(sn_hy)
+    ld c,a
+    call sn_gridptr
+    ld (hl),1
+    ret
+
+sn_gridptr:                     ; B = x, C = y -> HL = &grid[y * 22 + x]
+    ld l,c
+    ld h,0
+    add hl,hl
+    ld d,h
+    ld e,l                      ; DE = 2y
+    add hl,hl                   ; 4y
+    add hl,de                   ; 6y
+    add hl,hl                   ; 12y
+    add hl,hl                   ; 24y
+    or a
+    sbc hl,de                   ; 22y
+    ld e,b
+    ld d,0
+    add hl,de
+    ld de,sn_grid
+    add hl,de
+    ret
+
+sn_apple:                       ; a random free cell
+sna_try:
+    ld a,SN_W
+    call gl_rnd_n
+    ld (sn_ax),a
+    ld b,a
+    ld a,SN_H
+    call gl_rnd_n
+    ld (sn_ay),a
+    ld c,a
+    call sn_gridptr
+    ld a,(hl)
+    or a
+    jr nz,sna_try
+    ret
+
+; ---- input / step ---------------------------------------------------------------------------------------------------------
+sn_keys:
+    ld a,(gl_held)
+    ld b,a
+    ld a,(sn_dir)
+    ld c,a
+    bit 2,b                     ; UP
+    jr z,snk_d
+    ld a,c
+    cp 2
+    jr z,snk_d
+    xor a
+    ld (sn_nd),a
+snk_d:
+    bit 3,b                     ; DOWN
+    jr z,snk_l
+    ld a,c
+    or a
+    jr z,snk_l
+    ld a,2
+    ld (sn_nd),a
+snk_l:
+    bit 0,b                     ; LEFT
+    jr z,snk_r
+    ld a,c
+    cp 1
+    jr z,snk_r
+    ld a,3
+    ld (sn_nd),a
+snk_r:
+    bit 1,b                     ; RIGHT
+    ret z
+    ld a,c
+    cp 3
+    ret z
+    ld a,1
+    ld (sn_nd),a
+    ret
+
+sn_step:
+    ld a,(sn_nd)
+    ld (sn_dir),a
+    ld e,a
+    ld d,0
+    ld hl,sn_dx
+    add hl,de
+    ld a,(sn_hx)
+    add a,(hl)
+    ld b,a                      ; new x
+    ld hl,sn_dy
+    add hl,de
+    ld a,(sn_hy)
+    add a,(hl)
+    ld c,a                      ; new y
+    ld a,b
+    cp SN_W
+    jr nc,sn_die
+    ld a,c
+    cp SN_H
+    jr nc,sn_die
+    ld a,(sn_ax)                ; apple?
+    cp b
+    jr nz,sns_plain
+    ld a,(sn_ay)
+    cp c
+    jr nz,sns_plain
+    ld a,b
+    ld (sn_hx),a
+    ld a,c
+    ld (sn_hy),a
+    call sn_push
+    call sn_drawhead
+    ld hl,(sn_score)
+    inc hl
+    ld (sn_score),hl
+    ld a,(sn_len)
+    inc a
+    ld (sn_len),a
+    ld a,l                      ; faster every 4 apples
+    and 3
+    jr nz,sns_noup
+    ld a,(sn_int)
+    cp 3
+    jr c,sns_noup
+    dec a
+    ld (sn_int),a
+sns_noup:
+    call sn_apple
+    jp sn_drawscore             ; draws the new apple and the score
+sns_plain:
+    push bc
+    call sn_poptail             ; the tail leaves first: the head may follow it
+    pop bc
+    call sn_gridptr
+    ld a,(hl)
+    or a
+    jr nz,sn_die
+    ld a,b
+    ld (sn_hx),a
+    ld a,c
+    ld (sn_hy),a
+    call sn_push
+    jp sn_drawhead
+sn_die:
+    ld a,1
+    ld (sn_dead),a
+    ret
+sn_dx: .db 0,1,0,$FF
+sn_dy: .db $FF,0,1,0
+
+sn_poptail:
+    ld a,(sn_tail)
+    ld e,a
+    ld d,0
+    ld hl,sn_ring
+    add hl,de
+    add hl,de
+    ld b,(hl)
+    inc hl
+    ld c,(hl)
+    ld a,(sn_tail)
+    inc a
+    ld (sn_tail),a
+    push bc
+    call sn_gridptr
+    ld (hl),0
+    pop bc
+    xor a                       ; erase the cell
+    jp sn_cell
+
+; ---- drawing -------------------------------------------------------------------------------------------------------------
+sn_cell:                        ; B = cx, C = cy, A = mode (0 clear, 1 set): a 3x3 block
+    push bc
+    push de
+    push af
+    ld a,b
+    add a,a
+    add a,a
+    add a,4
+    ld b,a
+    ld a,c
+    add a,a
+    add a,a
+    add a,10
+    ld c,a
+    ld d,3
+    ld e,3
+    pop af
+    call gl_rect
+    pop de
+    pop bc
+    ret
+
+sn_drawhead:
+    ld a,(sn_hx)
+    ld b,a
+    ld a,(sn_hy)
+    ld c,a
+    ld a,1
+    jp sn_cell
+
+sn_drawapple:
+    ld a,(sn_ax)
+    ld b,a
+    ld a,(sn_ay)
+    ld c,a
+    ld a,1
+    call sn_cell
+    ld a,(sn_ax)                ; hollow centre
+    add a,a
+    add a,a
+    add a,5
+    ld b,a
+    ld a,(sn_ay)
+    add a,a
+    add a,a
+    add a,11
+    ld c,a
+    ld d,1
+    ld e,1
+    xor a
+    jp gl_rect
+
+sn_drawscore:                   ; apple + score line
+    call sn_drawapple
+    ld b,0                      ; clear the score strip
+    ld c,0
+    ld d,96
+    ld e,7
+    xor a
+    call gl_rect
+    ld hl,sn_l_sc
+    call gl_lang
+    ld b,1
+    ld c,1
+    call gl_text
+    ld hl,(sn_score)
+    ld b,8
+    ld c,1
+    call gl_num
+    ld hl,sn_l_be
+    call gl_lang
+    ld b,15
+    ld c,1
+    call gl_text
+    call gl_hs_get
+    ld de,(sn_score)
+    ld a,h
+    cp d
+    jr c,snd_us
+    jr nz,snd_ub
+    ld a,l
+    cp e
+    jr nc,snd_ub
+snd_us:
+    ex de,hl
+snd_ub:
+    ld b,21
+    ld c,1
+    jp gl_num
+
+sn_drawall:
+    call S_GFX_CLEAR
+    ld b,2
+    ld c,8
+    ld d,92
+    ld e,56
+    call gl_box
+    call sn_drawscore
+    ld a,(sn_tail)
+    ld b,a                      ; body: from the tail to the head
+snd_b:
+    ld a,(sn_head)
+    cp b
+    jr z,snd_done
+    ld e,b
+    ld d,0
+    ld hl,sn_ring
+    add hl,de
+    add hl,de
+    push bc
+    ld b,(hl)
+    inc hl
+    ld c,(hl)
+    ld a,1
+    call sn_cell
+    pop bc
+    inc b
+    jr snd_b
+snd_done:
+    ret
+
+sn_l_sc: .db "PUNTOS",0,"SCORE",0
+sn_l_be: .db "MEJOR",0,"BEST",0

@@ -1,0 +1,827 @@
+; =============================================================================
+; TETRIS (native).  10 x 16 board of 4-pixel cells, 7-bag randomizer, wall kicks, ghost piece, line-clear flash, levels, high score.
+;   LEFT / RIGHT move (auto-repeat), UP or 2ND / ENTER rotate, DOWN soft drop, ALPHA / DEL hard drop, MODE or CLEAR pause.
+; Layout: board x 28..67, left panel (score, lines, level), right panel (next piece, best).
+; =============================================================================
+tt_type     .equ GV+0
+tt_rot      .equ GV+1
+tt_x        .equ GV+2           ; signed
+tt_y        .equ GV+3           ; signed
+tt_trot     .equ GV+4           ; candidate piece (tt_fits / tt_iter use these)
+tt_tx       .equ GV+5
+tt_ty       .equ GV+6
+tt_col      .equ GV+7
+tt_next     .equ GV+8
+tt_score    .equ GV+9           ; 16-bit
+tt_lines    .equ GV+11          ; 16-bit
+tt_level    .equ GV+13
+tt_g        .equ GV+14          ; gravity frame counter
+tt_das      .equ GV+15
+tt_dirty    .equ GV+16
+tt_ovr      .equ GV+17
+tt_cb       .equ GV+18          ; 16-bit: per-cell callback of tt_iter
+tt_sw       .equ GV+20          ; 16-bit: shape word being shifted
+tt_bagi     .equ GV+22
+tt_flash    .equ GV+23
+tt_soft     .equ GV+24
+tt_style    .equ GV+25          ; 0 solid, 1 ghost
+tt_ci       .equ GV+26
+tt_ri       .equ GV+27
+tt_nfull    .equ GV+28
+tt_curtype  .equ GV+29
+tt_bag      .equ GV+32          ; 7 bytes
+tt_board    .equ $A500          ; 16 rows x 10 cells (0 = empty, 1..7 = piece + 1)
+TT_BX       .equ 28             ; board left edge in pixels
+
+game_tetris:
+    xor a
+    ld b,4
+    call gl_init
+tt_restart:
+    call tt_reset
+    call tt_draw
+    call gl_flush
+tt_loop:
+    call gl_tick
+    ld a,(gl_press)
+    and GK_Q|GK_P
+    jr z,tt_noq
+    call gl_pause
+    jr c,tt_quit
+    ld a,1
+    ld (tt_dirty),a
+tt_noq:
+    ld a,(tt_flash)
+    or a
+    jr nz,tt_doflash
+    call tt_input
+    ld a,(tt_ovr)
+    or a
+    jr nz,tt_gameover
+    call tt_gravity
+tt_after:
+    ld a,(tt_ovr)
+    or a
+    jr nz,tt_gameover
+    ld a,(tt_dirty)
+    or a
+    jr z,tt_loop
+    xor a
+    ld (tt_dirty),a
+    call tt_draw
+    call gl_flush
+    jr tt_loop
+tt_quit:
+    jp gl_exit
+tt_doflash:
+    dec a
+    ld (tt_flash),a
+    ld a,1
+    ld (tt_dirty),a
+    ld a,(tt_flash)
+    or a
+    call z,tt_collapse
+    jr tt_after
+tt_gameover:
+    call tt_draw
+    call gl_flush
+    ld hl,(tt_score)
+    call gl_gameover
+    jr c,tt_quit
+    jp tt_restart
+
+; ---- state ---------------------------------------------------------------------------------------------------------------
+tt_reset:
+    ld hl,tt_board
+    ld de,tt_board+1
+    ld bc,159
+    ld (hl),0
+    ldir
+    ld hl,0
+    ld (tt_score),hl
+    ld (tt_lines),hl
+    xor a
+    ld (tt_level),a
+    ld (tt_g),a
+    ld (tt_das),a
+    ld (tt_ovr),a
+    ld (tt_flash),a
+    ld (tt_soft),a
+    ld (tt_style),a
+    ld a,7
+    ld (tt_bagi),a              ; empty bag: refilled by the first draw
+    call tt_bag_next
+    ld (tt_next),a
+    jp tt_spawn
+
+tt_bag_next:                    ; -> A = next piece type from the 7-bag
+    ld a,(tt_bagi)
+    cp 7
+    call nc,tt_refill
+    ld a,(tt_bagi)
+    ld e,a
+    ld d,0
+    ld hl,tt_bag
+    add hl,de
+    inc a
+    ld (tt_bagi),a
+    ld a,(hl)
+    ret
+
+tt_refill:
+    ld hl,tt_bag
+    ld b,7
+    xor a
+trf_f:
+    ld (hl),a
+    inc hl
+    inc a
+    djnz trf_f
+    ld c,6                      ; Fisher-Yates shuffle
+trf_s:
+    ld a,c
+    inc a
+    call gl_rnd_n               ; A = 0..c
+    ld hl,tt_bag
+    add a,l
+    ld l,a                      ; HL = &bag[j]  (the table never crosses a page boundary)
+    ld de,tt_bag
+    ld a,e
+    add a,c
+    ld e,a                      ; DE = &bag[c]
+    ld a,(hl)
+    ld b,a
+    ld a,(de)
+    ld (hl),a
+    ld a,b
+    ld (de),a
+    dec c
+    jr nz,trf_s
+    xor a
+    ld (tt_bagi),a
+    ret
+
+tt_spawn:
+    ld a,(tt_next)
+    ld (tt_type),a
+    call tt_bag_next
+    ld (tt_next),a
+    xor a
+    ld (tt_rot),a
+    ld (tt_y),a
+    ld (tt_g),a
+    ld a,3
+    ld (tt_x),a
+    call tt_cand
+    ld a,1
+    ld (tt_dirty),a
+    call tt_fits
+    ret z
+    ld a,1
+    ld (tt_ovr),a
+    ret
+
+; ---- collision / iteration -----------------------------------------------------------------------------------------------
+tt_iter:                        ; calls (tt_cb) with D = cell x, E = cell y for each of the 4 cells of (tt_type, tt_trot, tt_tx, tt_ty)
+    ld a,(tt_type)
+    add a,a
+    add a,a
+    add a,a
+    ld e,a
+    ld a,(tt_trot)
+    add a,a
+    add a,e
+    ld e,a
+    ld d,0
+    ld hl,tt_shapes
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ld (tt_sw),de
+    ld b,0
+tti_l:
+    ld hl,(tt_sw)
+    add hl,hl
+    ld (tt_sw),hl
+    jr nc,tti_n
+    ld a,b
+    and 3
+    ld hl,tt_tx
+    add a,(hl)
+    ld d,a
+    ld a,b
+    srl a
+    srl a
+    ld hl,tt_ty
+    add a,(hl)
+    ld e,a
+    push bc
+    ld hl,(tt_cb)
+    call tt_jphl
+    pop bc
+tti_n:
+    inc b
+    ld a,b
+    cp 16
+    jr nz,tti_l
+    ret
+tt_jphl:
+    jp (hl)
+
+tt_cellptr:                     ; D = x, E = y (on the board) -> HL = &board cell   (clobbers BC)
+    ld l,e
+    ld h,0
+    add hl,hl
+    ld b,h
+    ld c,l
+    add hl,hl
+    add hl,hl
+    add hl,bc                   ; y * 10
+    ld c,d
+    ld b,0
+    add hl,bc
+    ld bc,tt_board
+    add hl,bc
+    ret
+
+tt_cb_test:
+    bit 7,d
+    jr nz,tt_hit
+    ld a,d
+    cp 10
+    jr nc,tt_hit
+    bit 7,e
+    ret nz                      ; above the board: free
+    ld a,e
+    cp 16
+    jr nc,tt_hit
+    call tt_cellptr
+    ld a,(hl)
+    or a
+    ret z
+tt_hit:
+    ld a,1
+    ld (tt_col),a
+    ret
+
+tt_fits:                        ; the candidate (tt_trot, tt_tx, tt_ty) fits?  Z = yes
+    xor a
+    ld (tt_col),a
+    ld hl,tt_cb_test
+    ld (tt_cb),hl
+    call tt_iter
+    ld a,(tt_col)
+    or a
+    ret
+
+tt_cand:                        ; candidate := the current piece
+    ld a,(tt_rot)
+    ld (tt_trot),a
+    ld a,(tt_x)
+    ld (tt_tx),a
+    ld a,(tt_y)
+    ld (tt_ty),a
+    ret
+
+tt_commit:                      ; current piece := the candidate
+    ld a,(tt_trot)
+    ld (tt_rot),a
+    ld a,(tt_tx)
+    ld (tt_x),a
+    ld a,(tt_ty)
+    ld (tt_y),a
+    ld a,1
+    ld (tt_dirty),a
+    ret
+
+; ---- input ---------------------------------------------------------------------------------------------------------------
+tt_input:
+    ld a,(gl_press)
+    and GK_B
+    jp nz,tt_harddrop
+    ld a,(gl_press)
+    and GK_U|GK_A
+    call nz,tt_rotate
+    ld a,(gl_held)
+    and GK_D
+    ld (tt_soft),a
+    ld a,(gl_held)
+    and GK_L|GK_R
+    jr z,tti_dasoff
+    ld a,(gl_press)
+    and GK_L|GK_R
+    jr nz,tti_first
+    ld a,(tt_das)
+    dec a
+    ld (tt_das),a
+    ret nz
+    ld a,2
+    ld (tt_das),a
+    jr tti_move
+tti_first:
+    ld a,7
+    ld (tt_das),a
+tti_move:
+    ld a,(gl_held)
+    and GK_L|GK_R
+    cp GK_L|GK_R
+    ret z                       ; both: do nothing
+    ld a,(gl_held)
+    and GK_L
+    ld e,$FF
+    jr nz,tti_try
+    ld e,1
+tti_try:
+    call tt_cand
+    ld a,(tt_x)
+    add a,e
+    ld (tt_tx),a
+    call tt_fits
+    ret nz
+    jp tt_commit
+tti_dasoff:
+    xor a
+    ld (tt_das),a
+    ret
+
+tt_rotate:
+    ld a,(tt_rot)
+    inc a
+    and 3
+    ld d,a                      ; new rotation
+    ld hl,tt_kicks
+    ld b,5
+ttr_l:
+    ld a,d
+    ld (tt_trot),a
+    ld a,(tt_x)
+    add a,(hl)
+    ld (tt_tx),a
+    ld a,(tt_y)
+    ld (tt_ty),a
+    push hl
+    push bc
+    push de
+    call tt_fits
+    pop de
+    pop bc
+    pop hl
+    jp z,tt_commit
+    inc hl
+    djnz ttr_l
+    ret
+tt_kicks: .db 0,$FF,1,$FE,2
+
+tt_harddrop:
+ttd_l:
+    call tt_cand
+    ld a,(tt_ty)
+    inc a
+    ld (tt_ty),a
+    call tt_fits
+    jr nz,tt_lock
+    call tt_commit
+    ld hl,(tt_score)
+    inc hl
+    inc hl
+    ld (tt_score),hl
+    jr ttd_l
+
+tt_gravity:
+    ld a,(tt_soft)
+    or a
+    ld b,2
+    jr nz,ttg_cmp
+    ld a,(tt_level)
+    cp 15
+    jr c,ttg_lv
+    ld a,14
+ttg_lv:
+    ld e,a
+    ld d,0
+    ld hl,tt_spd
+    add hl,de
+    ld b,(hl)
+ttg_cmp:
+    ld a,(tt_g)
+    inc a
+    ld (tt_g),a
+    cp b
+    ret c
+    xor a
+    ld (tt_g),a
+    call tt_cand
+    ld a,(tt_ty)
+    inc a
+    ld (tt_ty),a
+    call tt_fits
+    jr nz,tt_lock
+    call tt_commit
+    ld a,(tt_soft)
+    or a
+    ret z
+    ld hl,(tt_score)
+    inc hl
+    ld (tt_score),hl
+    ret
+tt_spd: .db 24,21,18,15,12,10,8,6,5,4,3,3,2,2,1
+
+; ---- lock, lines ---------------------------------------------------------------------------------------------------------
+tt_cb_lock:
+    bit 7,e
+    jr z,ttl_in
+    ld a,1
+    ld (tt_ovr),a               ; locked above the board
+    ret
+ttl_in:
+    call tt_cellptr
+    ld a,(tt_type)
+    inc a
+    ld (hl),a
+    ret
+
+tt_lock:
+    call tt_cand
+    ld hl,tt_cb_lock
+    ld (tt_cb),hl
+    call tt_iter
+    ld a,1
+    ld (tt_dirty),a
+    ld a,(tt_ovr)
+    or a
+    ret nz
+    call tt_count_full
+    ld a,(tt_nfull)
+    or a
+    jr z,ttl_next
+    ld a,8
+    ld (tt_flash),a
+    ret
+ttl_next:
+    xor a
+    ld (tt_soft),a
+    jp tt_spawn
+
+tt_row_full:                    ; A = row -> Z = every cell filled (clobbers BC, DE, HL)
+    ld e,a
+    ld d,0
+    call tt_cellptr
+    ld b,10
+ttrf_l:
+    ld a,(hl)
+    or a
+    jr z,ttrf_no
+    inc hl
+    djnz ttrf_l
+    xor a
+    ret
+ttrf_no:
+    or 1                        ; A was 0: now 1 -> NZ
+    ret
+
+tt_count_full:                  ; tt_nfull = number of full rows
+    xor a
+    ld (tt_nfull),a
+    ld c,0
+ttc_l:
+    ld a,c
+    push bc
+    call tt_row_full
+    pop bc
+    jr nz,ttc_n
+    ld a,(tt_nfull)
+    inc a
+    ld (tt_nfull),a
+ttc_n:
+    inc c
+    ld a,c
+    cp 16
+    jr nz,ttc_l
+    ret
+
+tt_collapse:                    ; remove the full rows, score, level, next piece
+ttcl_find:
+    ld c,15
+ttcl_l:
+    ld a,c
+    push bc
+    call tt_row_full
+    pop bc
+    jr z,ttcl_rm
+    dec c
+    jp p,ttcl_l
+    jr ttcl_done
+ttcl_rm:                        ; remove row C: rows 0..C-1 move down by one
+    ld a,c
+    or a
+    jr z,ttcl_top
+    ld l,a
+    ld h,0
+    add hl,hl
+    ld d,h
+    ld e,l
+    add hl,hl
+    add hl,hl
+    add hl,de                   ; HL = C * 10
+    ld b,h
+    ld c,l                      ; BC = bytes to move
+    push hl
+    ld de,tt_board-1
+    add hl,de                   ; HL = last byte of row C-1
+    pop de                      ; DE = C * 10
+    push hl
+    ld hl,tt_board+9
+    add hl,de
+    ex de,hl                    ; DE = last byte of row C
+    pop hl
+    lddr
+ttcl_top:
+    ld hl,tt_board
+    ld de,tt_board+1
+    ld bc,9
+    ld (hl),0
+    ldir
+    jr ttcl_find
+ttcl_done:
+    ld a,(tt_nfull)
+    ld e,a
+    ld d,0
+    ld hl,tt_pts
+    add hl,de
+    add hl,de
+    ld c,(hl)
+    inc hl
+    ld b,(hl)                   ; BC = base points for that many rows
+    ld a,(tt_level)
+    inc a                       ; * (level + 1)
+    ld hl,(tt_score)
+ttcl_mul:
+    add hl,bc
+    dec a
+    jr nz,ttcl_mul
+    ld (tt_score),hl
+    ld a,(tt_nfull)
+    ld e,a
+    ld d,0
+    ld hl,(tt_lines)
+    add hl,de
+    ld (tt_lines),hl
+    ld de,10                    ; level = lines / 10
+    ld c,0
+ttcl_d:
+    or a
+    sbc hl,de
+    jr c,ttcl_dd
+    inc c
+    jr ttcl_d
+ttcl_dd:
+    ld a,c
+    ld (tt_level),a
+    xor a
+    ld (tt_nfull),a
+    ld (tt_soft),a
+    jp tt_spawn
+tt_pts: .dw 0,40,100,300,1200
+
+; ---- drawing -------------------------------------------------------------------------------------------------------------
+tt_cb_draw:
+    bit 7,e
+    ret nz
+    ld a,d
+    add a,a
+    add a,a
+    add a,TT_BX
+    ld b,a
+    ld a,e
+    add a,a
+    add a,a
+    ld c,a
+    ld d,3
+    ld e,3
+    ld a,1
+    call gl_rect
+    ld a,(tt_style)
+    or a
+    ret z
+    inc b                       ; ghost: hollow cell (clear the middle pixel)
+    inc c
+    ld d,1
+    ld e,1
+    xor a
+    jp gl_rect
+
+tt_cb_prev:                     ; next-piece preview at (76, 12)
+    ld a,d
+    add a,a
+    add a,a
+    add a,76
+    ld b,a
+    ld a,e
+    add a,a
+    add a,a
+    add a,12
+    ld c,a
+    ld d,3
+    ld e,3
+    ld a,1
+    jp gl_rect
+
+tt_draw:
+    call S_GFX_CLEAR
+    ld b,26                     ; walls
+    ld c,0
+    ld d,1
+    ld e,64
+    ld a,1
+    call gl_rect
+    ld b,69
+    ld c,0
+    ld d,1
+    ld e,64
+    ld a,1
+    call gl_rect
+    ld hl,tt_l_sc               ; left panel
+    call gl_lang
+    ld b,0
+    ld c,1
+    call gl_text
+    ld hl,(tt_score)
+    ld b,0
+    ld c,8
+    call gl_num
+    ld hl,tt_l_li
+    call gl_lang
+    ld b,0
+    ld c,19
+    call gl_text
+    ld hl,(tt_lines)
+    ld b,0
+    ld c,26
+    call gl_num
+    ld hl,tt_l_lv
+    call gl_lang
+    ld b,0
+    ld c,37
+    call gl_text
+    ld a,(tt_level)
+    inc a
+    ld l,a
+    ld h,0
+    ld b,0
+    ld c,44
+    call gl_num
+    ld hl,tt_l_nx               ; right panel
+    call gl_lang
+    ld b,18
+    ld c,1
+    call gl_text
+    ld b,72
+    ld c,9
+    ld d,20
+    ld e,20
+    call gl_box
+    ld hl,tt_l_be
+    call gl_lang
+    ld b,18
+    ld c,34
+    call gl_text
+    call gl_hs_get
+    ld de,(tt_score)
+    ld a,h
+    cp d
+    jr c,ttd_us
+    jr nz,ttd_ub
+    ld a,l
+    cp e
+    jr nc,ttd_ub
+ttd_us:
+    ex de,hl                    ; the running score beats the stored best
+ttd_ub:
+    ld b,18
+    ld c,41
+    call gl_num
+    ld a,(tt_type)              ; next-piece preview (reuses tt_iter with the next type)
+    ld (tt_curtype),a
+    ld a,(tt_next)
+    ld (tt_type),a
+    xor a
+    ld (tt_trot),a
+    ld (tt_tx),a
+    ld (tt_ty),a
+    ld hl,tt_cb_prev
+    ld (tt_cb),hl
+    call tt_iter
+    ld a,(tt_curtype)
+    ld (tt_type),a
+    call tt_draw_board          ; settled blocks
+    ld a,(tt_ovr)
+    or a
+    jr nz,ttd_flash
+    call tt_cand                ; ghost: drop a copy of the piece until it rests
+ttd_gl:
+    ld a,(tt_ty)
+    inc a
+    ld (tt_ty),a
+    call tt_fits
+    jr z,ttd_gl
+    ld a,(tt_ty)
+    dec a
+    ld (tt_ty),a
+    ld c,a
+    ld a,(tt_y)
+    cp c
+    jr z,ttd_cur                ; the piece is already at the bottom: no ghost
+    ld a,1
+    ld (tt_style),a
+    ld hl,tt_cb_draw
+    ld (tt_cb),hl
+    call tt_iter
+ttd_cur:
+    xor a
+    ld (tt_style),a
+    call tt_cand
+    ld hl,tt_cb_draw
+    ld (tt_cb),hl
+    call tt_iter
+ttd_flash:
+    ld a,(tt_flash)
+    and 2                       ; blink the full rows
+    ret z
+    ld c,0
+ttdf_l:
+    ld a,c
+    push bc
+    call tt_row_full
+    pop bc
+    jr nz,ttdf_n
+    push bc
+    ld a,c
+    add a,a
+    add a,a
+    ld c,a                      ; pixel y
+    ld b,TT_BX
+    ld d,40
+    ld e,4
+    ld a,2
+    call gl_rect                ; xor: invert the row
+    pop bc
+ttdf_n:
+    inc c
+    ld a,c
+    cp 16
+    jr nz,ttdf_l
+    ret
+
+tt_draw_board:
+    ld hl,tt_board
+    ld a,16
+    ld (tt_ri),a
+    ld c,0
+ttb_r:
+    ld b,TT_BX
+    ld a,10
+    ld (tt_ci),a
+ttb_c:
+    ld a,(hl)
+    or a
+    jr z,ttb_n
+    push hl
+    ld d,3
+    ld e,3
+    ld a,1
+    call gl_rect
+    pop hl
+ttb_n:
+    inc hl
+    ld a,b
+    add a,4
+    ld b,a
+    ld a,(tt_ci)
+    dec a
+    ld (tt_ci),a
+    jr nz,ttb_c
+    ld a,c
+    add a,4
+    ld c,a
+    ld a,(tt_ri)
+    dec a
+    ld (tt_ri),a
+    jr nz,ttb_r
+    ret
+
+tt_l_sc: .db "PUNTOS",0,"SCORE",0
+tt_l_li: .db "LINEAS",0,"LINES",0
+tt_l_lv: .db "NIVEL",0,"LEVEL",0
+tt_l_nx: .db "PROX.",0,"NEXT",0
+tt_l_be: .db "MEJOR",0,"BEST",0
+
+; piece shapes: 4 rotations x 16-bit rows (row 0 = most significant nibble), pieces I O T S Z J L
+tt_shapes:
+    .dw $0F00,$2222,$00F0,$4444        ; I
+    .dw $6600,$6600,$6600,$6600        ; O
+    .dw $4E00,$4640,$0E40,$4C40        ; T
+    .dw $6C00,$8C40,$06C0,$4620        ; S
+    .dw $C600,$2640,$0C60,$4C80        ; Z
+    .dw $8E00,$6440,$0E20,$44C0        ; J
+    .dw $2E00,$4460,$0E80,$C440        ; L

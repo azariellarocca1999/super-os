@@ -1,0 +1,485 @@
+; =============================================================================
+; calc.z80 -- scientific calculator app (flash page 3).  Entry: calc_main (via call_pagex).
+;   TI-style keys: 2ND / ALPHA, MATH menu, STO (expr > A), ENTER, 2ND+ENTER recalls the last entry, MODE = DEG/RAD,
+;   CLEAR clears the line (then the history), 2ND+MODE quits.  Results use 9 significant digits.
+; =============================================================================
+m_tr:                           ; HL = MS_xxx -> HL = text of the current language
+    ld a,(s_lang)
+    or a
+    ld de,mstr_es
+    jr z,mtr1
+    ld de,mstr_en
+mtr1:
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ex de,hl
+    ret
+
+m_init:                         ; first run after power loss: variables, history, graph defaults
+    ld hl,(m_magic)
+    ld de,$5AA5
+    or a
+    sbc hl,de
+    ret z
+    call fx_init
+    xor a
+    ld (ed_menu),a
+    ld hl,c_hist
+    ld de,c_hist+1
+    ld bc,149
+    ld (hl),0
+    ldir
+    xor a
+    ld (c_last),a
+    ld (c_inbuf),a
+    call gr_defaults
+    ld hl,$5AA5
+    ld (m_magic),hl
+    ret
+
+calc_main:
+    ld (m_sp),sp
+    ld sp,MSTACK
+    call calc_run
+    ld sp,(m_sp)
+    ret
+
+graph_main:
+    ld (m_sp),sp
+    ld sp,MSTACK
+    call m_init
+    ld a,(v_font)
+    ld (m_oldfont),a
+    xor a
+    ld (v_font),a
+    ld a,(v_mode)
+    ld (m_oldmode),a
+    xor a
+    call S_SET_MODE
+    ld a,KC_GRAPH
+    call graph_entry
+    ld a,(m_oldfont)
+    ld (v_font),a
+    ld a,(m_oldmode)
+    call S_SET_MODE
+    ld sp,(m_sp)
+    ret
+
+calc_run:
+    call m_init
+    xor a
+    ld (ed_menu),a
+    ld a,(v_font)
+    ld (m_oldfont),a
+    xor a
+    ld (v_font),a
+    ld a,(v_mode)
+    ld (m_oldmode),a
+    xor a
+    call S_SET_MODE
+    ld hl,c_inbuf
+    ld a,47
+    call ed_start
+cr_loop:
+    call calc_draw
+    call S_LCD_BLIT
+    call S_WAIT_KEY
+    call ed_key
+    or a
+    jr z,cr_loop
+    cp KC_ENTER
+    jr z,cr_enter
+    cp KC_UP
+    jr z,cr_up
+    cp KC_MODE
+    jr z,cr_mode
+    cp KC_QUIT
+    jr z,cr_quit
+    cp KC_CLEAR
+    jr z,cr_clr
+    cp KC_YEQ
+    jr z,cr_graph
+    cp KC_GRAPH
+    jr z,cr_graph
+    cp KC_WINDOW
+    jr z,cr_graph
+    cp KC_ZOOM
+    jr z,cr_graph
+    cp KC_TRACE
+    jr z,cr_graph
+    jr cr_loop
+cr_quit:
+    ld a,(m_oldfont)
+    ld (v_font),a
+    ld a,(m_oldmode)
+    call S_SET_MODE
+    ret
+cr_mode:
+    ld a,(fx_angle)
+    xor 1
+    ld (fx_angle),a
+    jr cr_loop
+cr_clr:
+    ld hl,c_hist
+    ld de,c_hist+1
+    ld bc,149
+    ld (hl),0
+    ldir
+    jr cr_loop
+cr_up:
+    ld hl,c_last
+    ld de,c_inbuf
+    ld bc,52
+    ldir
+    ld hl,c_inbuf
+    ld a,47
+    call ed_start
+    jr cr_loop
+cr_graph:
+    call graph_entry
+    ld hl,c_inbuf
+    ld a,47
+    call ed_start
+    jp cr_loop
+cr_enter:
+    ld a,(ed_len)
+    or a
+    jp z,cr_loop
+    ld hl,c_inbuf
+    ld de,c_last
+    ld bc,52
+    ldir
+    call calc_eval
+    ld hl,c_inbuf
+    ld (hl),0
+    ld a,47
+    call ed_start
+    jp cr_loop
+
+; evaluate c_last (full text); push the result on the history
+calc_eval:
+    ld a,0
+    ld (c_flag),a               ; no store target
+    ld hl,c_inbuf
+ce1:
+    ld a,(hl)
+    or a
+    jr z,ce4
+    cp '>'
+    jr z,ce2
+    inc hl
+    jr ce1
+ce2:
+    ld (hl),0
+    inc hl
+    ld a,(hl)
+    sub 'A'
+    cp 26
+    jr nc,ce_syn
+    inc hl
+    ld b,a
+    ld a,(hl)
+    or a
+    jr nz,ce_syn                ; more than one letter
+    ld a,b
+    inc a
+    ld (c_flag),a               ; variable index + 1
+ce4:
+    ld hl,c_inbuf
+    call ev_eval
+    jr c,ce_err
+    ld a,26
+    call fx_stvar               ; ANS
+    ld a,(c_flag)
+    or a
+    jr z,ce5
+    dec a
+    call fx_stvar
+ce5:
+    call fx_tostr
+    xor a
+    ld (c_hst),a
+    jr ce_push
+ce_syn:
+    ld a,4
+    ld (fx_err),a
+ce_err:
+    ld a,(fx_err)
+    ld (c_hst),a
+ce_push:
+    ld hl,c_hist+50             ; scroll the history up
+    ld de,c_hist
+    ld bc,100
+    ldir
+    ; expression text (first 24 chars)
+    ld a,255
+    ld (rn_cur),a
+    ld hl,rbuf+99
+    ld (rn_end),hl
+    ld hl,c_last
+    ld de,rbuf
+    call render_expr
+    ld hl,rbuf
+    ld de,c_hist+100
+    ld b,24
+ce6:
+    ld a,(hl)
+    or a
+    jr z,ce7
+    ld (de),a
+    inc hl
+    inc de
+    djnz ce6
+ce7:
+    xor a
+    ld (de),a
+    ; result text
+    ld a,(c_hst)
+    or a
+    jr z,ce8
+    add a,a
+    ld l,a
+    ld h,0
+    call m_tr
+    jr ce9
+ce8:
+    ld hl,fx_str
+ce9:
+    ld de,c_hist+125
+    ld b,24
+ce10:
+    ld a,(hl)
+    ld (de),a
+    or a
+    ret z
+    inc hl
+    inc de
+    djnz ce10
+    xor a
+    ld (de),a
+    ret
+
+calc_draw:
+    call S_GFX_CLEAR
+    call S_STATUS_DRAW
+    ld ix,c_hist
+    ld c,8
+    ld b,3
+cd1:
+    push bc
+    push ix
+    pop hl
+    ld b,0
+    call S_PUTS
+    pop bc
+    push bc
+    ld a,c
+    add a,6
+    ld c,a
+    push ix
+    pop hl
+    ld de,25
+    add hl,de
+    push hl
+    ld b,0
+cd2:
+    ld a,(hl)
+    or a
+    jr z,cd3
+    inc hl
+    inc b
+    jr cd2
+cd3:
+    ld a,24
+    sub b
+    jr nc,cd4
+    xor a
+cd4:
+    ld b,a
+    pop hl
+    call S_PUTS
+    pop bc
+    ld a,c
+    add a,12
+    ld c,a
+    ld de,50
+    add ix,de
+    djnz cd1
+    xor a
+    ld (rn_col),a
+    ld a,24
+    ld (rn_w),a
+    ld hl,(ed_buf)
+    ld a,(ed_cur)
+    ld b,a
+    ld c,44
+    call ed_render
+    ; indicator row
+    ld a,(fx_angle)
+    or a
+    ld hl,MS_RAD
+    jr z,cd5
+    ld hl,MS_DEG
+cd5:
+    call m_tr
+    ld b,0
+    ld c,56
+    call S_PUTS
+    ld a,(ed_mod)
+    bit 0,a
+    jr z,cd6
+    ld hl,cd_2nd
+    ld b,5
+    ld c,56
+    call S_PUTS
+    jr cd8
+cd6:
+    bit 1,a
+    jr z,cd7
+    ld hl,cd_alpha
+    ld b,5
+    ld c,56
+    call S_PUTS
+    jr cd8
+cd7:
+    ld a,(ed_len)
+    or a
+    jr nz,cd8
+    ld hl,MS_CALC_HINT
+    call m_tr
+    ld b,10
+    ld c,56
+    call S_PUTS
+cd8:
+    ret
+cd_2nd:   .db "2ND",0
+cd_alpha: .db "ALPHA",0
+
+; ---- MATH menu: returns a token / char in A (0 = cancelled) -------------------------------------------------------
+FM_COUNT .equ 22
+fm_items:
+    .db T_ABS,T_FLOOR,T_CEIL,T_INT,T_FRAC,T_SIGN,T_ROUND,T_MOD,T_NCR,T_NPR,T_MIN,T_MAX,T_CBRT,T_LOG2
+    .db T_SINH,T_COSH,T_TANH,T_ASINH,T_ACOSH,T_ATANH,'!','%'
+
+fn_menu:
+    xor a
+    ld (m_sel),a
+    ld (m_top),a
+fm_loop:
+    call fm_draw
+    call S_LCD_BLIT
+    call S_WAIT_KEY
+    cp K_UP
+    jr z,fm_up
+    cp K_DOWN
+    jr z,fm_down
+    cp K_ENTER
+    jr z,fm_pick
+    cp K_CLEAR
+    jr z,fm_cancel
+    cp K_MATH
+    jr z,fm_cancel
+    jr fm_loop
+fm_cancel:
+    xor a
+    ret
+fm_up:
+    ld a,(m_sel)
+    or a
+    jr z,fm_loop
+    dec a
+    ld (m_sel),a
+    ld hl,m_top
+    cp (hl)
+    jr nc,fm_loop
+    ld (hl),a
+    jr fm_loop
+fm_down:
+    ld a,(m_sel)
+    inc a
+    cp FM_COUNT
+    jr nc,fm_loop
+    ld (m_sel),a
+    ld b,a
+    ld a,(m_top)
+    add a,7
+    cp b
+    jr nc,fm_loop
+    ld a,(m_top)
+    inc a
+    ld (m_top),a
+    jr fm_loop
+fm_pick:
+    ld a,(m_sel)
+    ld e,a
+    ld d,0
+    ld hl,fm_items
+    add hl,de
+    ld a,(hl)
+    ret
+
+fm_draw:
+    ld hl,MS_MATH_TITLE
+    call m_tr
+    call S_UI_BEGIN
+    xor a
+    ld (m_row),a
+fd1:
+    ld a,(m_top)
+    ld b,a
+    ld a,(m_row)
+    add a,b
+    cp FM_COUNT
+    ret nc
+    ld e,a
+    ld d,0
+    ld hl,fm_items
+    add hl,de
+    ld a,(hl)
+    ld hl,fm_tmp
+    cp $80
+    jr c,fd2
+    sub $80
+    ld l,a
+    ld h,0
+    add hl,hl
+    ld bc,tok_names
+    add hl,bc
+    ld c,(hl)
+    inc hl
+    ld h,(hl)
+    ld l,c
+    jr fd3
+fd2:
+    ld (fm_tmp),a
+    xor a
+    ld (fm_tmp+1),a
+    ld hl,fm_tmp
+fd3:
+    ld a,(m_row)
+    call S_UI_LINE_Y
+    ld b,1
+    call S_PUTS
+    ld a,(m_top)
+    ld b,a
+    ld a,(m_row)
+    add a,b
+    ld b,a
+    ld a,(m_sel)
+    cp b
+    jr nz,fd4
+    ld a,(m_row)
+    call S_UI_LINE_Y
+    ld b,0
+    ld d,12
+    ld e,6
+    call S_GFX_INVERT
+fd4:
+    ld a,(m_row)
+    inc a
+    ld (m_row),a
+    cp 8
+    jr c,fd1
+    ret

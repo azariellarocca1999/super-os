@@ -1,0 +1,848 @@
+; =============================================================================
+; Flash page 4: information apps -- periodic table, physical constants, Wikipedia and weather (via the ESP32).
+; Only page-0 services are used (this page is banked into $4000 like the others).
+; =============================================================================
+#include "kernel/superos.inc"
+#include "kernel/sys.inc"
+#include "mathjt.inc"
+#include "pstrings.inc"
+
+P_BASE   .equ $9E00             ; RAM page $81 user area (shared with the math apps, never used at the same time)
+p_idx    .equ P_BASE            ; up to 118 line pointers (236 bytes)
+p_sp     .equ (P_BASE+240)
+p_row    .equ (P_BASE+242)
+p_col    .equ (P_BASE+243)
+p_top    .equ (P_BASE+244)
+p_z      .equ (P_BASE+245)
+p_font   .equ (P_BASE+246)
+p_mode   .equ (P_BASE+247)
+p_sel    .equ (P_BASE+248)
+p_n      .equ (P_BASE+249)
+p_r      .equ (P_BASE+250)
+p_dflag  .equ (P_BASE+251)
+p_rec    .equ (P_BASE+252)      ; 2
+p_cmd    .equ (P_BASE+254)
+p_tmp    .equ (P_BASE+256)      ; 48 bytes
+p_tmp2   .equ (P_BASE+304)      ; 48 bytes
+MSTACK4  .equ $BE00
+DATA_BUF .equ $C000             ; periodic table text (7.5 KB) is inflated here (RESPBUF + TEXTBUF)
+
+.org $4000
+P4_JT:
+    jp ptable_main              ; $4000
+    jp const_main               ; $4003
+    jp wiki_main                ; $4006
+    jp weather_main             ; $4009
+P4_JT_END:
+
+p_tr:                           ; HL = PS_xxx -> HL = text of the current language
+    ld a,(s_lang)
+    or a
+    ld de,pstr_es
+    jr z,ptr1
+    ld de,pstr_en
+ptr1:
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ex de,hl
+    ret
+
+p_enter:                        ; common prologue: 4x6 font, static mode (the caller switched the stack)
+    ld a,(v_font)
+    ld (p_font),a
+    ld a,(v_mode)
+    ld (p_mode),a
+    xor a
+    ld (v_font),a
+    jp S_SET_MODE
+p_leave:
+    ld a,(p_font)
+    ld (v_font),a
+    ld a,(p_mode)
+    call S_SET_MODE
+    xor a
+    call S_RAM_PAGE
+    ld sp,(p_sp)
+    ret
+
+; ---- text helpers ---------------------------------------------------------------------------------------------------
+pt_field:                       ; HL = record, B = field index -> HL = start of that field ('|' separated)
+    ld a,b
+    or a
+    ret z
+pf1:
+    ld a,(hl)
+    inc hl
+    cp '|'
+    jr nz,pf1
+    djnz pf1
+    ret
+pt_copyf:                       ; copy the field at HL to DE (stops at '|', LF or 0); DE -> end
+    ld a,(hl)
+    or a
+    ret z
+    cp '|'
+    ret z
+    cp 10
+    ret z
+    ld (de),a
+    inc hl
+    inc de
+    jr pt_copyf
+pt_catf:                        ; field B of record HL appended at DE ('-' when empty)
+    call pt_field
+    ld a,(hl)
+    cp '|'
+    jr z,pcf_d
+    cp 10
+    jr z,pcf_d
+    or a
+    jr z,pcf_d
+    jr pt_copyf
+pcf_d:
+    ld a,'-'
+    ld (de),a
+    inc de
+    ret
+p_cat:                          ; append the text at HL to DE
+    ld a,(hl)
+    or a
+    ret z
+    ld (de),a
+    inc hl
+    inc de
+    jr p_cat
+p_nl:                           ; terminate the text at DE
+    xor a
+    ld (de),a
+    ret
+p_puts_y:                       ; HL text, C = y (column 0)
+    ld b,0
+    jp S_PUTS
+pt_dec:                         ; HL = 0..999 -> decimal digits at DE (no leading zeros)
+    xor a
+    ld (p_dflag),a
+    ld bc,100
+    call pdd
+    ld bc,10
+    call pdd
+    ld a,l
+    add a,'0'
+    ld (de),a
+    inc de
+    ret
+pdd:
+    ld a,'0'-1
+pdd1:
+    inc a
+    or a
+    sbc hl,bc
+    jr nc,pdd1
+    add hl,bc
+    cp '0'
+    jr nz,pdd_out
+    ld c,a
+    ld a,(p_dflag)
+    or a
+    ld a,c
+    ret z
+pdd_out:
+    ld (de),a
+    inc de
+    ld a,1
+    ld (p_dflag),a
+    ret
+
+; ---- periodic table ---------------------------------------------------------------------------------------------------------
+; record: SYM|NAME EN|NAME ES|MASS|GROUP|PERIOD|CATEGORY|CONFIG|MELT K|BOIL K|EN|DENSITY
+ptable_main:
+    ld (p_sp),sp
+    ld sp,MSTACK4
+    call p_enter
+    xor a
+    call S_RAM_PAGE
+    ld hl,pt_zx0
+    ld de,DATA_BUF
+    call S_DZX0_STANDARD
+    ld hl,DATA_BUF
+    ld de,p_idx
+    ld b,118
+pt_ix:
+    ld a,l
+    ld (de),a
+    inc de
+    ld a,h
+    ld (de),a
+    inc de
+pt_ix2:
+    ld a,(hl)
+    inc hl
+    cp 10
+    jr nz,pt_ix2
+    djnz pt_ix
+    xor a
+    ld (p_row),a
+    ld (p_col),a
+    ld (p_top),a
+pt_loop:
+    call pt_draw
+    call S_LCD_BLIT
+    call S_WAIT_KEY
+    cp K_CLEAR
+    jp z,p_leave
+    cp K_LEFT
+    jr z,pt_left
+    cp K_RIGHT
+    jr z,pt_right
+    cp K_UP
+    jr z,pt_up
+    cp K_DOWN
+    jr z,pt_down
+    cp K_ENTER
+    jp z,pt_enter
+    jr pt_loop
+pt_left:
+    ld d,$FF
+    jr pt_horiz
+pt_right:
+    ld d,1
+pt_horiz:                       ; D = +-1: next non-empty cell in the row
+    ld a,(p_col)
+    ld c,a
+ph1:
+    ld a,c
+    add a,d
+    jp m,pt_loop
+    cp 18
+    jp nc,pt_loop
+    ld c,a
+    ld a,(p_row)
+    ld b,a
+    call pt_cell                ; A = Z of (B row, C col)
+    or a
+    jr z,ph1
+    ld a,c
+    ld (p_col),a
+    jp pt_loop
+pt_up:
+    ld e,$FF
+    jr pt_vert
+pt_down:
+    ld e,1
+pt_vert:                        ; E = +-1: nearest non-empty cell of the next row
+    ld a,(p_row)
+    ld b,a
+pv0:
+    ld a,b
+    add a,e
+    jp m,pt_loop
+    cp 9
+    jp nc,pt_loop
+    ld b,a
+    ld a,(p_col)
+    ld c,a
+    ld d,0                      ; offset
+pv1:
+    ld a,c                      ; col + offset
+    add a,d
+    cp 18
+    jr nc,pv2
+    push bc
+    ld c,a
+    call pt_cell
+    pop bc
+    or a
+    jr nz,pv_found_r
+pv2:
+    ld a,c                      ; col - offset
+    sub d
+    jr c,pv3
+    push bc
+    ld c,a
+    call pt_cell
+    pop bc
+    or a
+    jr nz,pv_found_l
+pv3:
+    inc d
+    ld a,d
+    cp 18
+    jr c,pv1
+    jr pv0                      ; empty row: keep going in the same direction
+pv_found_r:
+    ld a,c
+    add a,d
+    jr pv_set
+pv_found_l:
+    ld a,c
+    sub d
+pv_set:
+    ld (p_col),a
+    ld a,b
+    ld (p_row),a
+    ld hl,p_top                 ; scroll window of 7 rows
+    cp (hl)
+    jr nc,pv_s1
+    ld (hl),a
+    jp pt_loop
+pv_s1:
+    ld a,(hl)
+    add a,6
+    ld c,a
+    ld a,b
+    cp c
+    jp c,pt_loop
+    jp z,pt_loop
+    sub 6
+    ld (hl),a
+    jp pt_loop
+pt_enter:
+    call pt_curz
+    ld (p_z),a
+pt_det_loop:
+    call pt_detail
+    call S_LCD_BLIT
+    call S_WAIT_KEY
+    cp K_LEFT
+    jr z,pt_dprev
+    cp K_RIGHT
+    jr z,pt_dnext
+    jp pt_loop
+pt_dprev:
+    ld a,(p_z)
+    dec a
+    jr z,pt_det_loop
+    ld (p_z),a
+    jr pt_det_loop
+pt_dnext:
+    ld a,(p_z)
+    cp 118
+    jr nc,pt_det_loop
+    inc a
+    ld (p_z),a
+    jr pt_det_loop
+
+pt_cell:                        ; B = row, C = col -> A = atomic number (0 = empty); B, C preserved
+    ld l,b
+    ld h,0
+    ld d,h
+    ld e,l
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,hl                   ; row * 16
+    add hl,de
+    add hl,de                   ; + row * 2
+    ld e,c
+    ld d,0
+    add hl,de
+    ld de,pt_grid
+    add hl,de
+    ld a,(hl)
+    ret
+pt_curz:                        ; -> A = atomic number under the cursor
+    ld a,(p_row)
+    ld b,a
+    ld a,(p_col)
+    ld c,a
+    jr pt_cell
+pt_line:                        ; A = Z -> HL = record (B, C preserved)
+    dec a
+    ld l,a
+    ld h,0
+    add hl,hl
+    ld de,p_idx
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ex de,hl
+    ret
+
+pt_draw:
+    call S_GFX_CLEAR
+    call S_STATUS_DRAW
+    xor a
+    ld (p_r),a
+pd_row:
+    ld c,0
+pd_col:
+    push bc
+    ld a,(p_top)
+    ld b,a
+    ld a,(p_r)
+    add a,b
+    ld b,a                      ; B = grid row, C = column
+    call pt_cell
+    or a
+    jr z,pd_skip
+    call pt_line
+    ld d,(hl)                   ; first letter of the symbol
+    ld a,(p_row)
+    cp b
+    ld a,0
+    jr nz,pd_inv
+    ld a,(p_col)
+    cp c
+    ld a,0
+    jr nz,pd_inv
+    ld a,$F0
+pd_inv:
+    ld (v_invert),a
+    ld a,(p_r)
+    ld e,a
+    add a,a
+    add a,e
+    add a,a
+    add a,8                     ; y = 8 + 6 * r
+    ld e,a
+    ld a,c
+    add a,3
+    ld b,a                      ; text column
+    ld c,e
+    ld a,d
+    call S_PUTCHAR
+    xor a
+    ld (v_invert),a
+pd_skip:
+    pop bc
+    inc c
+    ld a,c
+    cp 18
+    jr c,pd_col
+    ld hl,p_r
+    inc (hl)
+    ld a,(hl)
+    cp 7
+    jr c,pd_row
+    ; two info lines for the selected element
+    call pt_curz
+    ld (p_z),a
+    call pt_line
+    ld (p_rec),hl
+    ld de,p_tmp
+    ld b,0
+    call pt_copyf               ; symbol
+    ld a,' '
+    ld (de),a
+    inc de
+    ld hl,(p_rec)
+    ld b,2                      ; Spanish name = field 2
+    ld a,(s_lang)
+    or a
+    jr z,pd_n1
+    ld b,1
+pd_n1:
+    call pt_field
+    call pt_copyf
+    call p_nl
+    ld hl,p_tmp
+    ld c,52
+    call p_puts_y
+    ld hl,(p_rec)
+    ld de,p_tmp
+    ld b,3
+    call pt_catf                ; mass
+    ld a,' '
+    ld (de),a
+    inc de
+    ld a,'U'
+    ld (de),a
+    inc de
+    ld a,' '
+    ld (de),a
+    inc de
+    ld hl,(p_rec)
+    ld b,6
+    call pt_field
+    ld a,(hl)
+    sub '0'
+    add a,a
+    ld l,a
+    ld h,0
+    ld bc,PS_CAT0
+    add hl,bc
+    push de
+    call p_tr
+    pop de
+    call p_cat
+    call p_nl
+    ld hl,p_tmp
+    ld c,58
+    jp p_puts_y
+
+pt_row_out:                     ; HL = PS label id, B = field index of the current element -> one text line at y = p_r
+    push bc
+    call p_tr
+    ld de,p_tmp
+    call p_cat
+    ld a,' '
+    ld (de),a
+    inc de
+    pop bc
+    ld hl,(p_rec)
+    call pt_catf
+    call p_nl
+    ld hl,p_tmp
+    ld a,(p_r)
+    ld c,a
+    call p_puts_y
+    ld a,(p_r)
+    add a,6
+    ld (p_r),a
+    ret
+
+pt_detail:
+    ld a,(p_z)
+    call pt_line
+    ld (p_rec),hl
+    ld de,p_tmp2
+    ld b,2
+    ld a,(s_lang)
+    or a
+    jr z,ptd1
+    ld b,1
+ptd1:
+    call pt_field
+    call pt_copyf
+    call p_nl
+    ld hl,p_tmp2
+    call S_UI_BEGIN
+    ld a,14
+    ld (p_r),a
+    ld hl,(p_rec)               ; "FE Z=26 G8 P4"
+    ld de,p_tmp
+    ld b,0
+    call pt_copyf
+    ld a,' '
+    ld (de),a
+    inc de
+    ld a,'Z'
+    ld (de),a
+    inc de
+    ld a,'='
+    ld (de),a
+    inc de
+    ld a,(p_z)
+    ld l,a
+    ld h,0
+    call pt_dec
+    ld a,' '
+    ld (de),a
+    inc de
+    ld a,'G'
+    ld (de),a
+    inc de
+    ld hl,(p_rec)
+    ld b,4
+    call pt_catf
+    ld a,' '
+    ld (de),a
+    inc de
+    ld a,'P'
+    ld (de),a
+    inc de
+    ld hl,(p_rec)
+    ld b,5
+    call pt_catf
+    call p_nl
+    ld hl,p_tmp
+    ld c,14
+    call p_puts_y
+    ld a,20
+    ld (p_r),a
+    ld hl,PS_F_MASS
+    ld b,3
+    call pt_row_out
+    ld hl,PS_F_CFG
+    ld b,7
+    call pt_row_out
+    ld hl,PS_F_MELT
+    ld b,8
+    call pt_row_out
+    ld hl,PS_F_BOIL
+    ld b,9
+    call pt_row_out
+    ld hl,PS_F_EN
+    ld b,10
+    call pt_row_out
+    ld hl,PS_F_DENS
+    ld b,11
+    jp pt_row_out
+
+; ---- constants ---------------------------------------------------------------------------------------------------------------------
+; record: SYMBOL|NAME ES|NAME EN|VALUE|UNIT
+const_main:
+    ld (p_sp),sp
+    ld sp,MSTACK4
+    call p_enter
+    ld hl,const_text
+    ld de,p_idx
+    ld b,0
+cn_ix:
+    ld a,(hl)
+    or a
+    jr z,cn_done
+    ld a,l
+    ld (de),a
+    inc de
+    ld a,h
+    ld (de),a
+    inc de
+    inc b
+cn_ix2:
+    ld a,(hl)
+    inc hl
+    cp 10
+    jr nz,cn_ix2
+    jr cn_ix
+cn_done:
+    ld a,b
+    ld (p_n),a
+    xor a
+    ld (p_sel),a
+    ld (p_top),a
+cn_loop:
+    call cn_draw
+    call S_LCD_BLIT
+    call S_WAIT_KEY
+    cp K_CLEAR
+    jp z,p_leave
+    cp K_UP
+    jr z,cn_up
+    cp K_DOWN
+    jr z,cn_down
+    cp K_ENTER
+    jp z,cn_enter
+    jr cn_loop
+cn_up:
+    ld a,(p_sel)
+    or a
+    jr z,cn_loop
+    dec a
+    ld (p_sel),a
+    ld hl,p_top
+    cp (hl)
+    jr nc,cn_loop
+    ld (hl),a
+    jr cn_loop
+cn_down:
+    ld a,(p_sel)
+    inc a
+    ld hl,p_n
+    cp (hl)
+    jr nc,cn_loop
+    ld (p_sel),a
+    ld b,a
+    ld a,(p_top)
+    add a,7
+    cp b
+    jr nc,cn_loop
+    ld a,(p_top)
+    inc a
+    ld (p_top),a
+    jr cn_loop
+cn_rec:                         ; A = index -> HL = record
+    ld l,a
+    ld h,0
+    add hl,hl
+    ld de,p_idx
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ex de,hl
+    ret
+cn_draw:
+    ld hl,PS_CN_TITLE
+    call p_tr
+    call S_UI_BEGIN
+    xor a
+    ld (p_r),a
+cd1:
+    ld a,(p_top)
+    ld b,a
+    ld a,(p_r)
+    add a,b
+    ld hl,p_n
+    cp (hl)
+    ret nc
+    call cn_rec
+    ld (p_rec),hl
+    ld de,p_tmp
+    ld b,0
+    call pt_copyf               ; symbol
+cd_pad:
+    ld a,e
+    sub (p_tmp & $FF)
+    cp 7
+    jr nc,cd_name
+    ld a,' '
+    ld (de),a
+    inc de
+    jr cd_pad
+cd_name:
+    ld hl,(p_rec)
+    ld b,1                      ; Spanish name = field 1
+    ld a,(s_lang)
+    or a
+    jr z,cd4
+    ld b,2
+cd4:
+    call pt_field
+    call pt_copyf
+    call p_nl
+    ld a,(p_r)
+    call S_UI_LINE_Y
+    ld hl,p_tmp
+    ld b,0
+    call S_PUTS
+    ld a,(p_top)
+    ld b,a
+    ld a,(p_r)
+    add a,b
+    ld b,a
+    ld a,(p_sel)
+    cp b
+    jr nz,cd5
+    ld a,(p_r)
+    call S_UI_LINE_Y
+    ld b,0
+    ld d,12
+    ld e,6
+    call S_GFX_INVERT
+cd5:
+    ld hl,p_r
+    inc (hl)
+    ld a,(hl)
+    cp 8
+    jr c,cd1
+    ret
+cn_enter:
+    ld a,(p_sel)
+    call cn_rec
+    ld (p_rec),hl
+    ld b,1
+    ld a,(s_lang)
+    or a
+    jr z,ce1
+    ld b,2
+ce1:
+    call pt_field
+    ld de,p_tmp2
+    call pt_copyf
+    call p_nl
+    ld hl,p_tmp2
+    call S_UI_BEGIN
+    ld hl,(p_rec)
+    ld de,p_tmp
+    ld b,0
+    call pt_copyf               ; "SYM = value"
+    ld a,' '
+    ld (de),a
+    inc de
+    ld a,'='
+    ld (de),a
+    inc de
+    ld a,' '
+    ld (de),a
+    inc de
+    ld hl,(p_rec)
+    ld b,3
+    call pt_field
+    call pt_copyf
+    call p_nl
+    ld hl,p_tmp
+    ld c,16
+    call p_puts_y
+    ld hl,(p_rec)
+    ld de,p_tmp
+    ld b,4
+    call pt_catf                ; unit
+    call p_nl
+    ld hl,p_tmp
+    ld c,28
+    call p_puts_y
+    ld hl,PS_CN_HINT
+    call p_tr
+    ld c,56
+    call p_puts_y
+    call S_LCD_BLIT
+    call S_WAIT_KEY
+    cp K_ENTER
+    jp nz,cn_loop
+    ld hl,(p_rec)               ; store the value in the calculator's ANS
+    ld b,3
+    call pt_field
+    ld de,p_tmp
+    call pt_copyf
+    call p_nl
+    ld hl,p_tmp
+    ld ix,CONST_STORE
+    ld a,3
+    call S_CALL_PAGEX
+    ld hl,PS_CN_TITLE
+    call p_tr
+    call S_UI_BEGIN
+    ld hl,PS_CN_OK
+    call p_tr
+    ld b,2
+    ld c,28
+    call S_PUTS
+    call S_LCD_BLIT
+    call S_WAIT_KEY
+    jp cn_loop
+
+; ---- Wikipedia / weather through the ESP32 -----------------------------------------------------------------------------------------
+wiki_main:
+    ld hl,PS_WK_Q
+    ld c,CMD_WIKI
+    jr net_ask
+weather_main:
+    ld hl,PS_WX_Q
+    ld c,CMD_WEATHER
+net_ask:
+    ld a,c
+    ld (p_cmd),a
+    call p_tr
+    ld a,0                      ; flags: T9 entry, no model switch
+    call S_TEXT_EDIT
+    ret c
+    ld hl,PS_WAIT
+    call p_tr
+    call S_UI_BEGIN
+    ld hl,PS_WAIT
+    call p_tr
+    ld b,2
+    ld c,28
+    call S_PUTS
+    call S_LCD_BLIT
+    ld a,(s_lang)
+    ld (INBUF),a                ; payload = [language 0 = ES, 1 = EN][text]
+    ld a,(v_inlen)
+    inc a
+    ld b,a
+    ld hl,INBUF
+    ld a,(p_cmd)
+    call S_LINK_REQUEST
+    jr c,net_fail
+    call S_INFLATE_REPLY
+    jp S_VIEWER
+net_fail:
+    ld hl,PS_NOLINK
+    call p_tr
+    call S_UI_BEGIN
+    ld hl,PS_NOLINK
+    call p_tr
+    ld b,0
+    ld c,28
+    call S_PUTS
+    call S_LCD_BLIT
+    jp S_WAIT_KEY
+
+#include "pstrings.z80"
+#include "consts_text.inc"
+#include "ptgrid.inc"
+#include "ptzx0.inc"

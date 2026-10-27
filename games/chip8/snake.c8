@@ -1,0 +1,171 @@
+; SNAKE -- original.  2 / 4 / 6 / 8 = up / left / right / down.  Eat the apples; walls and your own tail are deadly.
+; v0 v1 transfer pair, v2 head x, v3 head y (pixels, multiples of 4), v4 dir (0 up 1 right 2 down 3 left), v5 head index,
+; v6 tail index, v7 apple x, v8 apple y, v9 tail grow counter, va frame temp, vb vc temps, vd ve draw temps
+buf .equ 0x600                   ; 64 segments x 2 bytes
+start:
+    cls
+    ld v2,24
+    ld v3,12
+    ld v4,1
+    ld v5,0
+    ld v6,0
+    ld v9,3                     ; start length: grow 3 steps
+    call dhead                  ; draw the head
+    call push                   ; remember it
+    call newapple
+    ld va,30
+    ld dt,va
+sv:
+    ld va,dt
+    se va,0
+    jp sv
+loop:
+    ld va,2                     ; direction keys (no instant reversal)
+    sknp va
+    call kup
+    ld va,6
+    sknp va
+    call kright
+    ld va,8
+    sknp va
+    call kdown
+    ld va,4
+    sknp va
+    call kleft
+    se v4,0                     ; move the head
+    jp m1
+    add v3,0xFC
+    jp moved
+m1:
+    se v4,1
+    jp m2
+    add v2,4
+    jp moved
+m2:
+    se v4,2
+    jp m3
+    add v3,4
+    jp moved
+m3:
+    add v2,0xFC
+moved:
+    ld vb,63                    ; bounds: x 0..60, y 0..28 (wrapped values are > 63)
+    sub vb,v2
+    se vf,1
+    jp dead
+    ld vb,31
+    sub vb,v3
+    se vf,1
+    jp dead
+    se v2,v7                    ; apple?
+    jp plain
+    se v3,v8
+    jp plain
+    call dapple                 ; erase the apple, grow, draw head, new apple
+    call dhead
+    call push
+    add v9,3
+    call newapple
+    jp tick
+plain:
+    call dhead                  ; draw first: a collision means the body
+    se vf,1
+    jp ok
+    jp dead
+ok:
+    call push
+    se v9,0                     ; still growing?
+    jp growing
+    call poptail
+    jp tick
+growing:
+    add v9,0xFF
+tick:
+    ld va,dt
+    se va,0
+    jp tick
+    ld va,6
+    ld dt,va
+    jp loop
+dead:
+    ld va,60
+    ld dt,va
+dw:
+    ld va,dt
+    se va,0
+    jp dw
+    ld v0,0                     ; wait for any key then restart
+wk:
+    ld va,2
+    sknp va
+    jp start
+    ld va,4
+    sknp va
+    jp start
+    ld va,6
+    sknp va
+    jp start
+    ld va,8
+    sknp va
+    jp start
+    ld va,5
+    sknp va
+    jp start
+    jp wk
+kup:
+    se v4,2
+    ld v4,0
+    ret
+kdown:
+    se v4,0
+    ld v4,2
+    ret
+kright:
+    se v4,3
+    ld v4,1
+    ret
+kleft:
+    se v4,1
+    ld v4,3
+    ret
+dhead:
+    ld i,seg
+    drw v2,v3,4
+    ret
+dapple:
+    ld i,apple
+    drw v7,v8,4
+    ret
+push:                           ; store the head at index v5, then advance
+    ld v0,v2
+    ld v1,v3
+    ld i,buf
+    ld vb,v5
+    add vb,v5
+    add i,vb
+    ld [i],v1
+    add v5,1
+    ld vb,63
+    and v5,vb
+    ret
+poptail:                        ; erase the tail segment and advance the tail index
+    ld i,buf
+    ld vb,v6
+    add vb,v6
+    add i,vb
+    ld v1,[i]
+    ld i,seg
+    drw v0,v1,4
+    add v6,1
+    ld vb,63
+    and v6,vb
+    ret
+newapple:
+    rnd v7,0x3C
+    rnd v8,0x1C
+    call dapple
+    ret
+seg:
+    db 0xF0,0xF0,0xF0,0xF0
+apple:
+    db 0x60,0x90,0x90,0x60

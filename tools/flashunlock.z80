@@ -1,0 +1,10 @@
+; Flash unlock/lock routine.  The 83+SE hardware only honours port $14 writes when this exact byte
+; sequence is FETCHED from a privileged page; it lives at page $7C offset $3FF0 ($7FF0 in bank A).
+; A = 1 unlock, A = 0 lock.
+.org $7FF0
+    nop
+    nop
+    im 1
+    di
+    out ($14),a
+    ret

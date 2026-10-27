@@ -1,0 +1,185 @@
+; PONG -- original.  2 / 8 = paddle up / down.  First to 9 points wraps the score.
+; v0 player y, v1 cpu y, v2 ball x, v3 ball y, v4 dir x (1 right), v5 dir y (1 down), v6 player score, v7 cpu score, v8 cpu toggle
+start:
+    ld v6,0
+    ld v7,0
+newball:
+    cls
+    ld v0,13
+    ld v1,13
+    ld v2,30
+    ld v3,18
+    ld v5,1
+    ld i,paddle
+    ld v9,2
+    drw v9,v0,6
+    ld v9,60
+    drw v9,v1,6
+    ld i,ball
+    drw v2,v3,2
+    call score
+    ld va,30
+    ld dt,va
+serve:
+    ld va,dt
+    se va,0
+    jp serve
+loop:
+    ld i,paddle
+    ld v9,2
+    drw v9,v0,6                 ; erase player paddle
+    ld v9,60
+    drw v9,v1,6                 ; erase cpu paddle
+    ld i,ball
+    drw v2,v3,2                 ; erase ball
+    ld va,2
+    sknp va
+    add v0,0xFF
+    ld va,8
+    sknp va
+    add v0,1
+    ld vb,5                     ; clamp player 6..26
+    sub vb,v0
+    se vf,1
+    jp pc1
+    ld v0,6
+pc1:
+    ld vb,26
+    sub vb,v0
+    se vf,0
+    jp pc2
+    ld v0,26
+pc2:
+    rnd va,3                    ; the cpu follows the ball on three steps out of four (it used to be one in two: it could never reach the ball)
+    se va,0
+    jp cpuok
+    jp cpudone
+cpuok:
+    ld vb,v3
+    add vb,0xFE                 ; target = ball y - 2
+    se v1,vb
+    jp cpumove
+    jp cpudone
+cpumove:
+    ld va,v1
+    sub va,vb                   ; vf = 1 if cpu y >= target
+    se vf,1
+    jp cpudown
+    add v1,0xFF
+    jp cpudone
+cpudown:
+    add v1,1
+cpudone:
+    ld vb,5
+    sub vb,v1
+    se vf,1
+    jp pc3
+    ld v1,6
+pc3:
+    ld vb,26
+    sub vb,v1
+    se vf,0
+    jp pc4
+    ld v1,26
+pc4:
+    se v4,1                     ; move the ball
+    jp mleft
+    add v2,1
+    jp mvert
+mleft:
+    add v2,0xFF
+mvert:
+    se v5,1
+    jp mup
+    add v3,1
+    jp walls
+mup:
+    add v3,0xFF
+walls:
+    ld vb,7                     ; top wall: y <= 6 -> go down
+    sub vb,v3
+    se vf,1
+    jp wall2
+    ld v5,1
+wall2:
+    ld vb,29                    ; bottom wall: y >= 29 -> go up
+    sub vb,v3
+    se vf,0
+    jp pads
+    ld v5,0
+pads:
+    se v2,4                     ; player paddle line
+    jp cpuline
+    ld vc,v3
+    add vc,1
+    sub vc,v0                   ; vc = y + 1 - paddle
+    ld vb,6
+    sub vb,vc
+    se vf,1
+    jp cpuline
+    ld v4,1
+cpuline:
+    se v2,58
+    jp scored
+    ld vc,v3
+    add vc,1
+    sub vc,v1
+    ld vb,6
+    sub vb,vc
+    se vf,1
+    jp scored
+    ld v4,0
+scored:
+    ld vb,1                     ; ball past the player (x <= 1)
+    sub vb,v2
+    se vf,1
+    jp scored2
+    add v7,1
+    call wrap
+    jp newball
+scored2:
+    ld vb,61                    ; ball past the cpu (x >= 62)
+    sub vb,v2
+    se vf,0
+    jp draw
+    add v6,1
+    call wrap
+    jp newball
+draw:
+    ld i,paddle
+    ld v9,2
+    drw v9,v0,6
+    ld v9,60
+    drw v9,v1,6
+    ld i,ball
+    drw v2,v3,2
+tick:
+    ld va,dt
+    se va,0
+    jp tick
+    ld va,2
+    ld dt,va
+    jp loop
+wrap:
+    ld vb,10
+    se v6,vb
+    jp w2
+    ld v6,0
+w2:
+    se v7,vb
+    ret
+    ld v7,0
+    ret
+score:
+    ld vb,18
+    ld vc,0
+    ld f,v6
+    drw vb,vc,5
+    ld vb,42
+    ld f,v7
+    drw vb,vc,5
+    ret
+paddle:
+    db 0xC0,0xC0,0xC0,0xC0,0xC0,0xC0
+ball:
+    db 0xC0,0xC0

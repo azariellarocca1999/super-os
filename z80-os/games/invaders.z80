@@ -1,0 +1,904 @@
+; =============================================================================
+; SPACE INVADERS (native).  4 rows x 8 aliens that speed up as they die, three destructible bunkers, a bonus ship, three lives, endless waves.
+;   LEFT / RIGHT move, 2ND / ENTER / ALPHA / UP fire (one shot at a time), MODE / CLEAR pause.
+; =============================================================================
+iv_ox       .equ GV+0           ; formation origin
+iv_oy       .equ GV+1
+iv_dir      .equ GV+2           ; +2 / -2
+iv_frame    .equ GV+3           ; sprite animation frame
+iv_cnt      .equ GV+4
+iv_int      .equ GV+5           ; frames between formation steps
+iv_n        .equ GV+6           ; aliens alive
+iv_px       .equ GV+7           ; ship x
+iv_lives    .equ GV+8
+iv_score    .equ GV+9           ; 16-bit
+iv_pbx      .equ GV+11          ; player bullet (pby = 0: none)
+iv_pby      .equ GV+12
+iv_wave     .equ GV+13
+iv_ux       .equ GV+14          ; bonus ship x
+iv_uact     .equ GV+15
+iv_hit      .equ GV+16          ; frames left of the "ship hit" pause
+iv_tx       .equ GV+17          ; scratch
+iv_ty       .equ GV+18
+iv_lc       .equ GV+19
+iv_rc       .equ GV+20
+iv_row      .equ GV+21
+iv_col      .equ GV+22
+iv_ab       .equ GV+24          ; 3 alien bullets: x, y (y = 0: none)
+iv_alive    .equ GV+32          ; 32 bytes, row-major
+iv_bun      .equ GV+64          ; 3 bunkers x (6 left bytes + 6 right bytes)
+IV_PY       .equ 57
+IV_SPRH     .equ 6
+
+game_invaders:
+    ld a,5
+    ld b,4
+    call gl_init
+iv_restart:
+    ld hl,0
+    ld (iv_score),hl
+    ld a,3
+    ld (iv_lives),a
+    xor a
+    ld (iv_wave),a
+    call iv_bunkers
+    call iv_newwave
+iv_loop:
+    call gl_tick
+    ld a,(gl_press)
+    and GK_Q|GK_P
+    jr z,iv_nop
+    call gl_pause
+    jr c,iv_quit
+iv_nop:
+    ld a,(iv_hit)
+    or a
+    jr z,iv_play
+    dec a
+    ld (iv_hit),a
+    jr iv_draw
+iv_play:
+    call iv_ship
+    call iv_pbullet
+    call iv_formation
+    call iv_abullets
+    call iv_ufo
+    ld a,(iv_lives)
+    or a
+    jr z,iv_over
+    ld a,(iv_oy)                ; invaders reached the ground
+    ld b,a
+    ld a,(iv_n)
+    or a
+    jr z,iv_wavedone
+    ld a,b
+    cp 28
+    jr nc,iv_over
+    jr iv_draw
+iv_wavedone:
+    ld a,(iv_wave)
+    inc a
+    ld (iv_wave),a
+    call iv_bunkers
+    call iv_newwave
+iv_draw:
+    call iv_render
+    call gl_flush
+    jr iv_loop
+iv_quit:
+    jp gl_exit
+iv_over:
+    call iv_render
+    call gl_flush
+    ld hl,(iv_score)
+    call gl_gameover
+    jr c,iv_quit
+    jp iv_restart
+
+; ---- setup ---------------------------------------------------------------------------------------------------------------
+iv_newwave:
+    ld hl,iv_alive
+    ld de,iv_alive+1
+    ld bc,31
+    ld (hl),1
+    ldir
+    ld a,32
+    ld (iv_n),a
+    ld a,2
+    ld (iv_ox),a
+    ld a,(iv_wave)              ; later waves start lower
+    cp 5
+    jr c,ivn_w
+    ld a,4
+ivn_w:
+    add a,a
+    add a,10
+    ld (iv_oy),a
+    ld a,2
+    ld (iv_dir),a
+    xor a
+    ld (iv_frame),a
+    ld (iv_cnt),a
+    ld (iv_pby),a
+    ld (iv_uact),a
+    ld (iv_hit),a
+    ld hl,iv_ab
+    ld b,6
+ivn_c:
+    ld (hl),0
+    inc hl
+    djnz ivn_c
+    ld a,45
+    ld (iv_px),a
+    jr iv_setint
+
+iv_setint:                      ; frames per formation step: fewer aliens = faster
+    ld a,(iv_n)                 ; 3 + n/4 + n/8: 15 frames with 32 aliens .. 3 with the last one
+    ld b,a
+    srl a
+    srl a
+    ld c,a
+    ld a,b
+    srl a
+    srl a
+    srl a
+    add a,c
+    add a,3
+    ld (iv_int),a
+    ret
+
+iv_bunkers:
+    ld hl,iv_bun
+    ld c,3
+ivb_b:
+    ld de,iv_btab
+    ld b,12
+ivb_c:
+    ld a,(de)
+    ld (hl),a
+    inc hl
+    inc de
+    djnz ivb_c
+    dec c
+    jr nz,ivb_b
+    ret
+iv_btab:                        ; left byte of each row (x 0..7), then right byte (x 8..11 in the high nibble)
+    .db $3F,$7F,$FF,$FF,$FF,$E0
+    .db $C0,$E0,$F0,$F0,$F0,$70
+
+; ---- player ----------------------------------------------------------------------------------------------------------------
+iv_ship:
+    ld a,(gl_held)
+    ld b,a
+    ld a,(iv_px)
+    bit 0,b
+    jr z,ivs_r
+    sub 2
+    cp 2
+    jr nc,ivs_r
+    ld a,2
+ivs_r:
+    bit 1,b
+    jr z,ivs_s
+    add a,2
+    cp 87
+    jr c,ivs_s
+    ld a,86
+ivs_s:
+    ld (iv_px),a
+    ld a,(iv_pby)
+    or a
+    ret nz
+    ld a,(gl_press)
+    and GK_A|GK_B|GK_U
+    ret z
+    ld a,(iv_px)
+    add a,3
+    ld (iv_pbx),a
+    ld a,IV_PY-2
+    ld (iv_pby),a
+    ret
+
+iv_pbullet:
+    ld a,(iv_pby)
+    or a
+    ret z
+    sub 4
+    ld (iv_pby),a
+    cp 8
+    jr nc,ivp_ok
+    xor a
+    ld (iv_pby),a
+    ret
+ivp_ok:
+    ld a,(iv_pbx)               ; bunker (the player's own shield also stops the shot)
+    ld b,a
+    ld a,(iv_pby)
+    ld c,a
+    call iv_bhit
+    jr nc,ivp_al
+    xor a
+    ld (iv_pby),a
+    ret
+ivp_al:
+    ld a,(iv_uact)              ; bonus ship
+    or a
+    jr z,ivp_alien
+    ld a,(iv_pby)
+    cp 11
+    jr nc,ivp_alien
+    ld a,(iv_ux)
+    ld c,a
+    ld a,(iv_pbx)
+    sub c
+    jr c,ivp_alien
+    cp 8
+    jr nc,ivp_alien
+    xor a
+    ld (iv_uact),a
+    ld (iv_pby),a
+    ld a,3
+    call gl_rnd_n
+    inc a
+    ld e,a
+    ld d,0
+    ld hl,0
+    ld bc,50
+ivp_u:
+    add hl,bc
+    dec e
+    jr nz,ivp_u
+    jp iv_addscore
+ivp_alien:
+    ld a,(iv_pbx)               ; formation cell under the bullet
+    ld hl,iv_ox
+    sub (hl)
+    ret c
+    cp 80
+    ret nc
+    ld b,0                      ; col = dx / 10, within-cell x < 8
+ivp_dc:
+    cp 10
+    jr c,ivp_dcd
+    sub 10
+    inc b
+    jr ivp_dc
+ivp_dcd:
+    cp 8
+    ret nc
+    ld a,b
+    ld (iv_col),a
+    ld a,(iv_pby)
+    ld hl,iv_oy
+    sub (hl)
+    ret c
+    cp 32
+    ret nc
+    ld b,0                      ; row = dy / 8, within-cell y < 6
+ivp_dr:
+    cp 8
+    jr c,ivp_drd
+    sub 8
+    inc b
+    jr ivp_dr
+ivp_drd:
+    cp IV_SPRH
+    ret nc
+    ld a,b
+    ld (iv_row),a
+    add a,a
+    add a,a
+    add a,a
+    ld hl,iv_col
+    add a,(hl)
+    ld e,a
+    ld d,0
+    ld hl,iv_alive
+    add hl,de
+    ld a,(hl)
+    or a
+    ret z
+    ld (hl),0
+    xor a
+    ld (iv_pby),a
+    ld a,(iv_n)
+    dec a
+    ld (iv_n),a
+    call iv_setint
+    ld a,(iv_row)               ; points: 30 / 20 / 20 / 10
+    ld e,a
+    ld d,0
+    ld hl,iv_pts
+    add hl,de
+    ld e,(hl)
+    ld hl,0
+    add hl,de
+iv_addscore:
+    ld de,(iv_score)
+    add hl,de
+    ld (iv_score),hl
+    ret
+iv_pts: .db 30,20,20,10
+
+; ---- formation -------------------------------------------------------------------------------------------------------------
+iv_formation:
+    ld a,(iv_cnt)
+    inc a
+    ld (iv_cnt),a
+    ld hl,iv_int
+    cp (hl)
+    ret c
+    xor a
+    ld (iv_cnt),a
+    ld a,(iv_frame)
+    xor 1
+    ld (iv_frame),a
+    ld a,8                      ; leftmost / rightmost alive column
+    ld (iv_lc),a
+    xor a
+    ld (iv_rc),a
+    ld b,0                      ; column
+ivf_c:
+    ld c,0
+    ld a,b
+    ld e,a
+    ld d,0
+    ld hl,iv_alive
+    add hl,de
+ivf_r:
+    ld a,(hl)
+    or a
+    jr nz,ivf_any
+    ld de,8
+    add hl,de
+    inc c
+    ld a,c
+    cp 4
+    jr nz,ivf_r
+    jr ivf_nx
+ivf_any:
+    ld a,(iv_lc)
+    cp b
+    jr c,ivf_hi
+    ld a,b
+    ld (iv_lc),a
+ivf_hi:
+    ld a,(iv_rc)
+    cp b
+    jr nc,ivf_nx
+    ld a,b
+    ld (iv_rc),a
+ivf_nx:
+    inc b
+    ld a,b
+    cp 8
+    jr nz,ivf_c
+    ld a,(iv_n)
+    or a
+    ret z
+    ld a,(iv_dir)
+    bit 7,a
+    jr nz,ivf_left
+    ld a,(iv_rc)                ; right edge = ox + rc * 10 + 8
+    ld c,a
+    add a,a
+    add a,a
+    add a,c
+    add a,a
+    add a,8
+    ld hl,iv_ox
+    add a,(hl)
+    cp 92
+    jr nc,ivf_drop
+    jr ivf_move
+ivf_left:
+    ld a,(iv_lc)                ; left edge = ox + lc * 10
+    ld c,a
+    add a,a
+    add a,a
+    add a,c
+    add a,a
+    ld hl,iv_ox
+    add a,(hl)
+    cp 4
+    jr c,ivf_drop
+ivf_move:
+    ld a,(iv_dir)
+    ld hl,iv_ox
+    add a,(hl)
+    ld (hl),a
+    jr ivf_shoot
+ivf_drop:
+    ld a,(iv_oy)
+    add a,3
+    ld (iv_oy),a
+    ld a,(iv_dir)
+    neg
+    ld (iv_dir),a
+ivf_shoot:
+    ld a,4                      ; maybe an alien fires
+    call gl_rnd_n
+    or a
+    ret nz
+    ld hl,iv_ab                 ; a free bullet slot
+    ld b,3
+ivf_slot:
+    inc hl
+    ld a,(hl)
+    dec hl
+    or a
+    jr z,ivf_free
+    inc hl
+    inc hl
+    djnz ivf_slot
+    ret
+ivf_free:
+    ld a,8
+    call gl_rnd_n
+    ld (iv_col),a               ; a random column: its lowest alive alien shoots
+    ld c,3
+ivf_low:
+    ld a,c
+    add a,a
+    add a,a
+    add a,a
+    ld hl,iv_col
+    add a,(hl)
+    ld e,a
+    ld d,0
+    push hl
+    ld hl,iv_alive
+    add hl,de
+    ld a,(hl)
+    pop hl
+    or a
+    jr nz,ivf_fire
+    dec c
+    jp p,ivf_low
+    ret
+ivf_fire:                       ; HL at the iv_ab slot was lost: find it again
+    ld hl,iv_ab
+ivf_find:
+    inc hl
+    ld a,(hl)
+    dec hl
+    or a
+    jr z,ivf_set
+    inc hl
+    inc hl
+    jr ivf_find
+ivf_set:
+    ld a,(iv_col)
+    ld b,a
+    add a,a
+    add a,a
+    add a,b
+    add a,a
+    ld b,a
+    ld a,(iv_ox)
+    add a,b
+    add a,3
+    ld (hl),a                   ; x
+    inc hl
+    ld a,c
+    add a,a
+    add a,a
+    add a,a
+    ld b,a
+    ld a,(iv_oy)
+    add a,b
+    add a,IV_SPRH
+    ld (hl),a                   ; y
+    ret
+
+iv_abullets:
+    ld hl,iv_ab
+    ld b,3
+iva_l:
+    push bc
+    push hl
+    inc hl
+    ld a,(hl)
+    dec hl
+    or a
+    jr z,iva_n
+    ld a,(hl)
+    ld (iv_tx),a
+    inc hl
+    ld a,(hl)
+    add a,2
+    ld (hl),a
+    ld (iv_ty),a
+    cp 62
+    jr c,iva_t
+    ld (hl),0                   ; off the bottom
+    jr iva_n
+iva_t:
+    ld a,(iv_tx)
+    ld b,a
+    ld a,(iv_ty)
+    ld c,a
+    call iv_bhit
+    jr nc,iva_s
+    pop hl
+    push hl
+    inc hl
+    ld (hl),0
+    jr iva_n
+iva_s:
+    ld a,(iv_ty)                ; the ship?
+    cp IV_PY
+    jr c,iva_n
+    ld a,(iv_px)
+    ld c,a
+    ld a,(iv_tx)
+    sub c
+    jr c,iva_n
+    cp 8
+    jr nc,iva_n
+    pop hl
+    push hl
+    inc hl
+    ld (hl),0
+    ld a,(iv_lives)
+    dec a
+    ld (iv_lives),a
+    ld a,24
+    ld (iv_hit),a               ; short pause
+iva_n:
+    pop hl
+    pop bc
+    inc hl
+    inc hl
+    djnz iva_l
+    ret
+
+iv_ufo:
+    ld a,(iv_uact)
+    or a
+    jr nz,ivu_move
+    ld a,200
+    call gl_rnd_n
+    or a
+    ret nz
+    ld a,1
+    ld (iv_uact),a
+    xor a
+    ld (iv_ux),a
+    ret
+ivu_move:
+    ld a,(iv_ux)
+    inc a
+    ld (iv_ux),a
+    cp 90
+    ret c
+    xor a
+    ld (iv_uact),a
+    ret
+
+; ---- bunkers ---------------------------------------------------------------------------------------------------------------
+iv_bptr:                        ; B = x, C = y -> HL = byte of the bunker pixel, A = its bit mask (A = 0: outside every bunker); BC, DE kept
+    push bc
+    push de
+    call iv_bptr0
+    pop de
+    pop bc
+    ret
+iv_bptr0:
+    ld a,c
+    sub 48
+    jr c,ivbp_out
+    cp 6
+    jr nc,ivbp_out
+    ld (iv_row),a
+    ld d,0                      ; bunker index
+    ld a,b
+    sub 12
+    jr c,ivbp_out
+ivbp_l:
+    cp 28
+    jr c,ivbp_in
+    sub 28
+    inc d
+    ld e,a
+    ld a,d
+    cp 3
+    ld a,e
+    jr c,ivbp_l
+    jr ivbp_out
+ivbp_in:
+    cp 12                       ; x within the 12-pixel bunker?
+    jr nc,ivbp_out
+    ld e,a                      ; E = x within the bunker
+    ld a,d                      ; HL = iv_bun + 12 * index + row
+    add a,a
+    add a,d
+    add a,a
+    add a,a
+    ld l,a
+    ld h,0
+    ld bc,iv_bun
+    add hl,bc
+    ld a,(iv_row)
+    ld c,a
+    ld b,0
+    add hl,bc
+    ld a,e
+    cp 8
+    jr c,ivbp_lb
+    ld bc,6                     ; right-hand byte
+    add hl,bc
+    sub 8
+ivbp_lb:
+    ld b,a                      ; bit = 7 - (x & 7)
+    ld a,$80
+    inc b
+ivbp_m:
+    dec b
+    jr z,ivbp_d
+    srl a
+    jr ivbp_m
+ivbp_d:
+    or a                        ; clear carry, A != 0
+    ret
+ivbp_out:
+    xor a
+    ret
+
+iv_bhit:                        ; B = x, C = y: a bunker pixel there?  CF = hit (the area around it is eaten away)
+    call iv_bptr
+    or a
+    ret z                       ; (carry clear)
+    and (hl)
+    ret z
+    ld a,b                      ; carve a 3 x 3 hole
+    dec a
+    ld (iv_tx),a
+    ld a,c
+    dec a
+    ld (iv_ty),a
+    ld d,3
+ivh_y:
+    ld e,3
+    ld a,(iv_tx)
+    ld b,a
+ivh_x:
+    push de
+    ld a,(iv_ty)
+    ld c,a
+    call iv_bptr
+    or a
+    jr z,ivh_skip
+    cpl
+    and (hl)
+    ld (hl),a
+ivh_skip:
+    pop de
+    inc b
+    dec e
+    jr nz,ivh_x
+    ld a,(iv_ty)
+    inc a
+    ld (iv_ty),a
+    dec d
+    jr nz,ivh_y
+    scf
+    ret
+
+; ---- drawing -------------------------------------------------------------------------------------------------------------
+iv_render:
+    call S_GFX_CLEAR
+    ld hl,iv_l_sc
+    call gl_lang
+    ld b,0
+    ld c,1
+    call gl_text
+    ld hl,(iv_score)
+    ld b,6
+    ld c,1
+    call gl_num
+    ld hl,iv_l_li
+    call gl_lang
+    ld b,14
+    ld c,1
+    call gl_text
+    ld a,(iv_lives)
+    ld l,a
+    ld h,0
+    ld b,20
+    ld c,1
+    call gl_num
+    ld b,0
+    ld c,7
+    ld d,96
+    ld e,1
+    ld a,1
+    call gl_rect
+    ld b,0                      ; ground
+    ld c,63
+    ld d,96
+    ld e,1
+    ld a,1
+    call gl_rect
+    ld c,0                      ; bunkers
+ivr_b:
+    ld a,c
+    ld b,a
+    add a,a
+    add a,b
+    add a,a
+    add a,a                     ; 12 * index
+    ld e,a
+    ld d,0
+    ld hl,iv_bun
+    add hl,de
+    push bc
+    push hl
+    ld a,c                      ; x = 12 + 28 * index
+    add a,a
+    add a,a
+    ld b,a                      ; 4 * index
+    add a,a
+    add a,b                     ; 12 * index
+    add a,a
+    add a,b                     ; 28 * index
+    add a,12
+    ld b,a
+    ld c,48
+    ld d,6
+    ld a,1
+    call gl_spr
+    pop hl
+    ld de,6
+    add hl,de
+    ld a,b
+    add a,8
+    ld b,a
+    ld c,48
+    ld d,6
+    ld a,1
+    call gl_spr
+    pop bc
+    inc c
+    ld a,c
+    cp 3
+    jr nz,ivr_b
+    xor a                       ; aliens
+    ld (iv_row),a
+ivr_r:
+    xor a
+    ld (iv_col),a
+ivr_c:
+    ld a,(iv_row)
+    add a,a
+    add a,a
+    add a,a
+    ld hl,iv_col
+    add a,(hl)
+    ld e,a
+    ld d,0
+    ld hl,iv_alive
+    add hl,de
+    ld a,(hl)
+    or a
+    jr z,ivr_n
+    ld a,(iv_col)               ; x = ox + 10 * col
+    ld b,a
+    add a,a
+    add a,a
+    add a,b
+    add a,a
+    ld hl,iv_ox
+    add a,(hl)
+    ld b,a
+    ld a,(iv_row)               ; y = oy + 8 * row
+    add a,a
+    add a,a
+    add a,a
+    ld hl,iv_oy
+    add a,(hl)
+    ld c,a
+    ld a,(iv_row)               ; sprite = table[type * 2 + frame]
+    or a
+    jr z,ivr_t0
+    cp 3
+    jr nc,ivr_t2
+    ld a,2
+    jr ivr_ts
+ivr_t0:
+    xor a
+    jr ivr_ts
+ivr_t2:
+    ld a,4
+ivr_ts:
+    ld e,a
+    ld a,(iv_frame)
+    add a,e
+    ld e,a
+    add a,a
+    add a,e
+    add a,a                     ; * 6
+    ld e,a
+    ld d,0
+    ld hl,iv_sprites
+    add hl,de
+    ld d,6
+    ld a,1
+    call gl_spr
+ivr_n:
+    ld a,(iv_col)
+    inc a
+    ld (iv_col),a
+    cp 8
+    jr nz,ivr_c
+    ld a,(iv_row)
+    inc a
+    ld (iv_row),a
+    cp 4
+    jr nz,ivr_r
+    ld a,(iv_hit)              ; the ship blinks while hit
+    and 4
+    jr nz,ivr_nsh
+    ld hl,iv_ship_spr
+    ld a,(iv_px)
+    ld b,a
+    ld c,IV_PY
+    ld d,5
+    ld a,1
+    call gl_spr
+ivr_nsh:
+    ld a,(iv_pby)               ; player bullet
+    or a
+    jr z,ivr_nb
+    ld c,a
+    ld a,(iv_pbx)
+    ld b,a
+    ld d,1
+    ld e,3
+    ld a,1
+    call gl_rect
+ivr_nb:
+    ld hl,iv_ab                 ; alien bullets
+    ld b,3
+ivr_ab:
+    push bc
+    inc hl
+    ld a,(hl)
+    dec hl
+    or a
+    jr z,ivr_abn
+    ld c,a
+    ld b,(hl)
+    push hl
+    ld d,1
+    ld e,3
+    ld a,1
+    call gl_rect
+    pop hl
+ivr_abn:
+    inc hl
+    inc hl
+    pop bc
+    djnz ivr_ab
+    ld a,(iv_uact)              ; bonus ship
+    or a
+    ret z
+    ld hl,iv_ufo_spr
+    ld a,(iv_ux)
+    ld b,a
+    ld c,9
+    ld d,3
+    ld a,1
+    jp gl_spr
+
+iv_l_sc: .db "PTS",0,"PTS",0
+iv_l_li: .db "VIDAS",0,"LIVES",0
+iv_sprites:                     ; squid, crab, octopus: two frames each, 8 x 6
+    .db $3C,$7E,$DB,$FF,$24,$5A
+    .db $3C,$7E,$DB,$FF,$5A,$A5
+    .db $42,$24,$7E,$DB,$FF,$5A
+    .db $24,$42,$7E,$DB,$FF,$A5
+    .db $18,$7E,$FF,$DB,$7E,$A5
+    .db $18,$7E,$FF,$DB,$7E,$5A
+iv_ship_spr: .db $18,$18,$7E,$FF,$FF
+iv_ufo_spr:  .db $3C,$7E,$FF

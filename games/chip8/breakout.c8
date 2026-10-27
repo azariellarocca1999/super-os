@@ -1,0 +1,205 @@
+; BREAKOUT -- original.  4 / 6 = paddle left / right.  Break the 24 bricks; missing the ball restarts the game.
+; v0 transfer, v1 ball x, v2 ball y, v3 dx (1 right), v4 dy (1 down), v5 bricks broken, v6 paddle x, v7..v9 temps, va frame temp,
+; vb/vc score tens/ones, vd/ve draw temps
+bricks .equ 0x600                ; 24 bytes: 1 = brick present (3 rows of 8)
+start:
+    cls
+    ld vb,0
+    ld vc,0
+    ld v5,0
+    ld i,bricks                 ; brick map = 24 ones
+    ld v0,1
+    ld v7,0
+fill:
+    ld [i],v0                   ; stores v0 only, I += 1
+    add v7,1
+    se v7,24
+    jp fill
+    ld v7,0                     ; row counter
+    ld v9,6                     ; brick y
+rows:
+    ld v8,0                     ; brick x
+cols:
+    ld i,brick
+    drw v8,v9,3
+    add v8,8
+    se v8,64
+    jp cols
+    add v9,4
+    add v7,1
+    se v7,3
+    jp rows
+    ld v6,28
+    ld v1,31
+    ld v2,24
+    ld v3,1
+    ld v4,0
+    call dscore
+    call dpad
+    call dball
+    ld va,30
+    ld dt,va
+sv:
+    ld va,dt
+    se va,0
+    jp sv
+loop:
+    call dpad                   ; erase
+    call dball
+    ld va,4
+    sknp va
+    call goleft
+    ld va,6
+    sknp va
+    call goright
+    se v3,1                     ; ball x
+    jp bl
+    add v1,1
+    jp bv
+bl:
+    add v1,0xFF
+bv:
+    se v4,1                     ; ball y
+    jp bu
+    add v2,1
+    jp walls
+bu:
+    add v2,0xFF
+walls:
+    se v1,0
+    jp wr
+    ld v3,1
+wr:
+    se v1,62
+    jp wt
+    ld v3,0
+wt:
+    ld v9,5                     ; top: y <= 5 -> down
+    sub v9,v2
+    se vf,1
+    jp wp
+    ld v4,1
+wp:
+    se v2,29                    ; paddle row
+    jp lost
+    se v4,1
+    jp lost
+    ld v7,v1                    ; t = ball x + 1 - paddle in 0..8 -> hit
+    add v7,1
+    sub v7,v6
+    ld v9,8
+    sub v9,v7
+    se vf,1
+    jp lost
+    ld v4,0
+    ld v7,v1                    ; u = ball x - paddle: left zone (0..3) -> go left
+    sub v7,v6
+    ld v9,3
+    sub v9,v7
+    ld v3,0
+    se vf,1
+    ld v3,1
+lost:
+    ld v9,30
+    sub v9,v2
+    se vf,0
+    jp brickchk
+    jp start
+brickchk:
+    ld v9,5
+    sub v9,v2
+    se vf,0                     ; above the brick area (y <= 5)
+    jp draw
+    ld v7,v2
+    add v7,0xFA                 ; y - 6
+    ld v9,11
+    sub v9,v7
+    se vf,1                     ; below the bricks
+    jp draw
+    shr v7
+    shr v7                      ; row
+    ld v8,v1
+    shr v8
+    shr v8
+    shr v8                      ; col
+    shl v7
+    shl v7
+    shl v7
+    add v7,v8                   ; idx
+    ld i,bricks
+    add i,v7
+    ld v0,[i]
+    se v0,1
+    jp draw
+    ld v0,0                     ; hit: clear the flag, erase the sprite, bounce, score
+    ld [i],v0
+    shl v8
+    shl v8
+    shl v8                      ; brick x
+    ld v9,v2
+    add v9,0xFA
+    shr v9
+    shr v9
+    shl v9
+    shl v9
+    add v9,6                    ; brick y
+    ld i,brick
+    drw v8,v9,3
+    ld v7,1
+    xor v4,v7
+    call dscore                 ; erase old digits
+    add vc,1
+    sne vc,10
+    call carry
+    call dscore
+    add v5,1
+    se v5,24
+    jp draw
+    jp start
+draw:
+    call dpad
+    call dball
+tick:
+    ld va,dt
+    se va,0
+    jp tick
+    ld va,2
+    ld dt,va
+    jp loop
+carry:
+    ld vc,0
+    add vb,1
+    ret
+goleft:
+    sne v6,0
+    ret
+    add v6,0xFE
+    ret
+goright:
+    se v6,56
+    add v6,2
+    ret
+dpad:
+    ld i,pad
+    ld vd,30
+    drw v6,vd,2
+    ret
+dball:
+    ld i,ball
+    drw v1,v2,2
+    ret
+dscore:
+    ld vd,0
+    ld ve,50
+    ld f,vb
+    drw ve,vd,5
+    ld ve,57
+    ld f,vc
+    drw ve,vd,5
+    ret
+brick:
+    db 0x7E,0x7E,0x7E
+pad:
+    db 0xFF,0xFF
+ball:
+    db 0xC0,0xC0

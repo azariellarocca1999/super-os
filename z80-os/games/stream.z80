@@ -1,0 +1,458 @@
+; =============================================================================
+; Streamed games: the ESP32 runs the game (maze 3D, Game Boy, CHIP-8 ROMs), the calculator is a video terminal and a gamepad.
+;   CMD_GAME [0]                           -> titles, one per line
+;   CMD_GAME [1][index]                    -> "OK" / "ERR"
+;   CMD_GAME [2][keys lo][keys hi][flags]  -> frame: [0] unchanged | [1][bitmap x12][8 bytes per tile] | [2][768 bytes]
+;   CMD_GAME [3]                           -> stop
+;   CMD_TURBO [1] / [0]                    -> calculator-clocked byte layer on / off
+; Keys are the CHIP-8 keypad mask (see c8_keytab); flags bit 0 = "send a full frame" (first frame, after an error).
+; =============================================================================
+st_names    .equ $A300          ; up to 10 titles x 12 bytes
+st_n        .equ $A380
+st_sel      .equ $A381
+st_tx       .equ $A382
+st_bl       .equ $A383
+st_flags    .equ $A384
+st_fcnt     .equ $A385
+st_fps      .equ $A386
+st_t0       .equ $A387          ; 2
+st_j        .equ $A389
+st_fail     .equ $A38A
+st_rp       .equ $A38C          ; 2: reply read pointer
+st_rl       .equ $A38E          ; 2: reply bytes left
+st_font     .equ $A390
+st_mode     .equ $A391
+st_sb       .equ $A392
+st_fb       .equ $A400          ; the picture the deltas are applied to (768 bytes)
+
+pack_c:
+    ld a,(v_font)
+    ld (st_font),a
+    xor a
+    ld (v_font),a
+    call S_RAM_PAGE
+    ld hl,pk_t_c
+    call S_UI_BEGIN
+    ld hl,pk_s_conn_es
+    ld a,(s_lang)
+    or a
+    jr z,stc1
+    ld hl,pk_s_conn_en
+stc1:
+    ld b,2
+    ld c,28
+    call S_PUTS
+    call S_LCD_BLIT
+    ld hl,INBUF
+    ld (hl),0                   ; op 0: list the titles
+    ld a,CMD_GAME
+    ld hl,INBUF
+    ld b,1
+    call S_LINK_REQUEST
+    jr c,st_nolink
+    ld a,b
+    or c
+    jr z,st_nolink
+    call st_parse
+    ld a,(st_n)
+    or a
+    jr z,st_nolink
+    xor a
+    ld (st_sel),a
+    jp st_mdraw
+st_nolink:
+    ld hl,pk_s_nol_es
+    ld a,(s_lang)
+    or a
+    jr z,stn1
+    ld hl,pk_s_nol_en
+stn1:
+    call st_msg
+    call S_WAIT_KEY
+st_quit:
+    ld a,(st_font)
+    ld (v_font),a
+    ret
+st_msg:                 ; HL = message: title bar + message on one line
+    push hl
+    ld hl,pk_t_c
+    call S_UI_BEGIN
+    pop hl
+    ld b,0
+    ld c,28
+    call S_PUTS
+    jp S_LCD_BLIT
+
+st_parse:                       ; HL = RESPBUF, BC = length -> titles in st_names, count in st_n
+    ld (st_rp),hl
+    ld (st_rl),bc
+    xor a
+    ld (st_n),a
+st_pl:
+    ld a,(st_n)
+    cp 10
+    ret nc
+    ld hl,(st_rl)
+    ld a,h
+    or l
+    ret z
+    ld a,(st_n)
+    ld e,a
+    add a,a
+    add a,e
+    add a,a
+    add a,a                     ; n * 12
+    ld e,a
+    ld d,0
+    ld hl,st_names
+    add hl,de
+    ex de,hl                    ; DE = destination of this title
+    ld c,0                      ; characters kept
+st_pc:
+    ld hl,(st_rl)
+    ld a,h
+    or l
+    jr z,st_pend
+    dec hl
+    ld (st_rl),hl
+    ld hl,(st_rp)
+    ld a,(hl)
+    inc hl
+    ld (st_rp),hl
+    cp 10
+    jr z,st_pend
+    ld b,a
+    ld a,c
+    cp 10
+    jr nc,st_pc                 ; name full: drop the extra characters
+    ld a,b
+    ld (de),a
+    inc de
+    inc c
+    jr st_pc
+st_pend:
+    xor a
+    ld (de),a
+    ld a,c
+    or a
+    jr z,st_pl                  ; empty line: not a title
+    ld a,(st_n)
+    inc a
+    ld (st_n),a
+    jr st_pl
+
+st_name:                        ; A = index -> HL = title text
+    ld e,a
+    add a,a
+    add a,e
+    add a,a
+    add a,a
+    ld e,a
+    ld d,0
+    ld hl,st_names
+    add hl,de
+    ret
+
+st_mdraw:
+    ld hl,pk_t_c
+    call S_UI_BEGIN
+    xor a
+    ld (st_j),a
+st_ml:
+    ld a,(st_j)
+    ld hl,st_n
+    cp (hl)
+    jr z,st_mh
+    call st_name
+    ld de,pk_buf
+    ld a,(st_j)
+    add a,'1'
+    ld (de),a
+    inc de
+    ld a,' '
+    ld (de),a
+    inc de
+st_mcp:
+    ld a,(hl)
+    ld (de),a
+    inc hl
+    inc de
+    or a
+    jr nz,st_mcp
+    ld a,(st_j)
+    ld hl,st_sel
+    cp (hl)
+    ld a,0
+    jr nz,st_mi
+    ld a,$F0
+st_mi:
+    ld (v_invert),a
+    ld a,(st_j)
+    call S_UI_LINE_Y
+    ld hl,pk_buf
+    ld b,2
+    call S_PUTS
+    xor a
+    ld (v_invert),a
+    ld hl,st_j
+    inc (hl)
+    jr st_ml
+st_mh:
+    ld hl,pk_h_es
+    ld a,(s_lang)
+    or a
+    jr z,st_mhs
+    ld hl,pk_h_en
+st_mhs:
+    ld b,0
+    ld c,58
+    call S_PUTS_SMALL
+    call S_LCD_BLIT
+    call S_WAIT_KEY
+    cp K_CLEAR
+    jp z,st_quit
+    cp K_UP
+    jr z,st_up
+    cp K_DOWN
+    jr z,st_dn
+    cp K_ENTER
+    jr z,st_play
+    ld hl,pk_digits
+    ld b,0
+st_dg:
+    cp (hl)
+    jr z,st_dig
+    inc hl
+    inc b
+    ld c,a
+    ld a,b
+    cp 6
+    ld a,c
+    jr c,st_dg
+    jp st_mdraw
+st_dig:
+    ld a,b
+    ld hl,st_n
+    cp (hl)
+    jp nc,st_mdraw
+    ld (st_sel),a
+    jr st_play
+st_up:
+    ld a,(st_sel)
+    or a
+    jp z,st_mdraw
+    dec a
+    ld (st_sel),a
+    jp st_mdraw
+st_dn:
+    ld a,(st_sel)
+    inc a
+    ld hl,st_n
+    cp (hl)
+    jp nc,st_mdraw
+    ld (st_sel),a
+    jp st_mdraw
+
+; ---- play ------------------------------------------------------------------------------------------------------------
+st_play:
+    ld hl,INBUF
+    ld (hl),1                   ; start title [sel]
+    inc hl
+    ld a,(st_sel)
+    ld (hl),a
+    ld a,CMD_GAME
+    ld hl,INBUF
+    ld b,2
+    call S_LINK_REQUEST
+    jp c,st_nolink
+    ld a,(RESPBUF)
+    cp 'O'
+    jp nz,st_nolink
+    ld hl,INBUF
+    ld (hl),1                   ; turbo on (if it fails the safe layer still works, just slowly)
+    ld a,CMD_TURBO
+    ld hl,INBUF
+    ld b,1
+    call S_LINK_REQUEST
+    ld hl,st_fb
+    ld de,st_fb+1
+    ld bc,767
+    ld (hl),0
+    ldir
+    ld a,1
+    ld (st_flags),a
+    xor a
+    ld (st_fcnt),a
+    ld (st_fps),a
+    ld (st_fail),a
+    ld hl,(v_tick)
+    ld (st_t0),hl
+    ld a,(v_statbar)
+    ld (st_sb),a
+    xor a
+    ld (v_statbar),a
+    ld a,(v_mode)
+    ld (st_mode),a
+    ld a,1
+    call S_SET_MODE
+st_loop:
+    call c8_scankeys            ; A = CLEAR held
+    or a
+    jr nz,st_stop
+    ld hl,INBUF
+    ld (hl),2                   ; op 2: frame
+    inc hl
+    ld a,(c8_keys)
+    ld (hl),a
+    inc hl
+    ld a,(c8_keys+1)
+    ld (hl),a
+    inc hl
+    ld a,(st_flags)
+    ld (hl),a
+    ld a,CMD_GAME
+    ld hl,INBUF
+    ld b,4
+    call S_LINK_DIRECT
+    jr c,st_err
+    call st_apply
+    xor a
+    ld (st_flags),a
+    ld (st_fail),a
+    ld hl,st_fb
+    ld de,GBUF1
+    ld bc,768
+    ldir
+    call st_fpsdraw
+    call S_LCD_BLIT
+    jr st_loop
+st_err:
+    ld a,1
+    ld (st_flags),a             ; ask for a full frame after an error
+    ld hl,st_fail
+    inc (hl)
+    ld a,(hl)
+    cp 4
+    jr c,st_loop
+st_stop:
+    ld hl,INBUF
+    ld (hl),3                   ; stop the game
+    ld a,CMD_GAME
+    ld hl,INBUF
+    ld b,1
+    call S_LINK_REQUEST
+    ld hl,INBUF
+    ld (hl),0                   ; back to the safe byte layer
+    ld a,CMD_TURBO
+    ld hl,INBUF
+    ld b,1
+    call S_LINK_REQUEST
+    ld a,(st_sb)
+    ld (v_statbar),a
+    ld a,(st_mode)
+    call S_SET_MODE
+    call c8_release_clear
+    jp st_mdraw
+
+st_fpsdraw:                     ; counts frames, shows frames per second in the bottom right corner
+    ld hl,st_fcnt
+    inc (hl)
+    ld hl,(v_tick)
+    ld de,(st_t0)
+    or a
+    sbc hl,de
+    ld a,h
+    or a
+    jr nz,stf_roll
+    ld a,l
+    cp TICK_HZ
+    jr c,stf_show
+stf_roll:
+    ld a,(st_fcnt)
+    ld (st_fps),a
+    xor a
+    ld (st_fcnt),a
+    ld hl,(v_tick)
+    ld (st_t0),hl
+stf_show:
+    ld a,(st_fps)
+    ld l,a
+    ld h,0
+    ld b,21
+    ld c,58
+    jp S_PRINT_U16
+
+; Apply a frame reply (HL = data, BC = length) to st_fb
+st_apply:
+    ld a,b
+    or c
+    ret z
+    ld a,(hl)
+    cp 2
+    jr z,sta_full
+    cp 1
+    ret nz
+    inc hl
+    push hl
+    pop iy                      ; IY = bitmap
+    ld de,12
+    add hl,de                   ; HL = tile bytes
+    ld de,st_fb                 ; DE = top-left byte of the current tile
+    xor a
+    ld (st_tx),a
+    ld a,12
+    ld (st_bl),a
+sta_byte:
+    ld c,(iy+0)
+    ld b,8
+sta_bit:
+    srl c
+    jr nc,sta_skip
+    push de
+    push bc
+    push de
+    pop ix
+    ld b,8
+sta_row:
+    ld a,(hl)
+    ld (ix+0),a
+    inc hl
+    ld de,12
+    add ix,de
+    djnz sta_row
+    pop bc
+    pop de
+sta_skip:
+    inc de                      ; next tile: one byte to the right
+    ld a,(st_tx)
+    inc a
+    cp 12
+    jr nz,sta_nw
+    ld a,e                      ; end of a tile row: down 8 rows = +96, minus the 12 bytes just walked
+    add a,84
+    ld e,a
+    jr nc,sta_nc
+    inc d
+sta_nc:
+    xor a
+sta_nw:
+    ld (st_tx),a
+    djnz sta_bit
+    inc iy
+    ld a,(st_bl)
+    dec a
+    ld (st_bl),a
+    jr nz,sta_byte
+    ret
+sta_full:
+    inc hl
+    ld de,st_fb
+    ld bc,768
+    ldir
+    ret
+
+pk_t_c:      .db "STREAM 3D",0
+pk_s_conn_es: .db "CONECTANDO...",0
+pk_s_conn_en: .db "CONNECTING...",0
+pk_s_nol_es:  .db "SIN RESPUESTA ESP32",0
+pk_s_nol_en:  .db "NO ANSWER FROM ESP32",0

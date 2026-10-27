@@ -1,0 +1,997 @@
+; =============================================================================
+; Native game library (flash page 5).  Everything the Super-OS games share: frame pacing, key matrix scan, a random generator,
+; rectangles / boxes on the 96x64 frame buffer, centred text, pause / game-over overlays and high scores.
+; All games run in the UI task with the status bar hidden and the 3x5 font; the 4x4-pixel cell grid is 24 x 16 cells.
+; Game RAM: $A400-$AFFF (free window of RAM page $81).  Each game uses its own variables from GV on; only one game runs at a time.
+; =============================================================================
+GL          .equ $A400
+gl_held     .equ GL+0           ; keys held now:  b0 LEFT b1 RIGHT b2 UP b3 DOWN b4 A (2ND / ENTER) b5 B (ALPHA / DEL) b6 PAUSE (MODE) b7 QUIT (CLEAR)
+gl_prev     .equ GL+1
+gl_press    .equ GL+2           ; keys that went down since the previous frame
+gl_next     .equ GL+3           ; 16-bit: tick of the next frame
+gl_per      .equ GL+5           ; frame period in ticks (108 Hz)
+gl_rng      .equ GL+6           ; 16-bit LFSR state
+gl_mode     .equ GL+8           ; rect mode: 0 clear, 1 set, 2 xor
+gl_svs      .equ GL+9
+gl_svm      .equ GL+10
+gl_svf      .equ GL+11
+gl_rb0      .equ GL+12
+gl_rb1      .equ GL+13
+gl_rx1      .equ GL+14
+gl_rh       .equ GL+15
+gl_lm       .equ GL+16
+gl_rm       .equ GL+17
+gl_krow     .equ GL+18          ; 7 key rows
+gl_gid      .equ GL+26          ; which game (high score slot)
+gl_new      .equ GL+27          ; 1 when the last game over beat the high score
+glb_x       .equ GL+28          ; gl_box scratch (RAM: the page itself is flash)
+glb_w       .equ GL+30
+glb_h       .equ GL+31
+gsp_s       .equ GL+32          ; gl_spr / gl_dnum scratch
+gsp_n       .equ GL+33
+gsp_xb      .equ GL+34
+gsp_p       .equ GL+35          ; 16-bit
+gld_x       .equ GL+37
+gld_y       .equ GL+38
+gld_f       .equ GL+39
+gl_full     .equ GL+40          ; 1: the next gl_flush sends the whole picture
+gl_tiles    .equ GL+41          ; 12 bytes: dirty tiles of the current flush (bit = 8-row band)
+glf_bm      .equ GL+53
+gl_sig      .equ GL+54          ; 16-bit hash of the game state at the last drawn frame
+GV          .equ $A440          ; first byte of the per-game variables
+GL_HS       .equ $A7C0          ; 8 x 16-bit high scores (battery-backed RAM: they survive sleep, not a battery change)
+
+GK_L        .equ $01
+GK_R        .equ $02
+GK_U        .equ $04
+GK_D        .equ $08
+GK_A        .equ $10
+GK_B        .equ $20
+GK_P        .equ $40
+GK_Q        .equ $80
+
+; ---- start / end ---------------------------------------------------------------------------------------------------------
+gl_init:                        ; A = game id (high score slot), B = frame period in ticks
+    ld (gl_gid),a
+    ld a,b
+    ld (gl_per),a
+    ld a,(v_statbar)
+    ld (gl_svs),a
+    xor a
+    ld (v_statbar),a
+    ld a,(v_mode)
+    ld (gl_svm),a
+    ld a,1
+    call S_SET_MODE
+    ld a,(v_font)
+    ld (gl_svf),a
+    xor a
+    ld (v_font),a
+    ld (v_invert),a
+    ld hl,(v_tick)
+    ld a,h
+    or l
+    jr nz,gli_seed
+    ld hl,$ACE1
+gli_seed:
+    ld (gl_rng),hl
+    ld hl,(v_tick)
+    ld (gl_next),hl
+    ld a,1
+    ld (gl_full),a
+gli_rel:                        ; wait until every key is released (the menu key that started the game)
+    call S_FRAME_WAIT
+    call gl_scan
+    ld a,(gl_held)
+    or a
+    jr nz,gli_rel
+    ld (gl_prev),a
+    ret
+
+gl_exit:
+    ld a,(gl_svs)
+    ld (v_statbar),a
+    ld a,(gl_svm)
+    call S_SET_MODE
+    ld a,(gl_svf)
+    ld (v_font),a
+    ret
+
+; ---- keys ----------------------------------------------------------------------------------------------------------------
+gl_scan:                        ; reads the matrix -> gl_held, gl_press
+    ld hl,gl_krow
+    ld d,%11111110
+    ld c,0
+gls_r:
+    ld a,d
+    out (P_KEYS),a
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    in a,(P_KEYS)
+    cpl
+    ld (hl),a
+    inc hl
+    rlc d
+    inc c
+    ld a,c
+    cp 7
+    jr nz,gls_r
+    ld a,$FF
+    out (P_KEYS),a
+    ld e,0
+    ld ix,gl_ktab
+gls_t:
+    ld a,(ix+0)
+    cp $FF
+    jr z,gls_d
+    ld c,a
+    ld b,0
+    ld hl,gl_krow
+    add hl,bc
+    ld a,(hl)
+    and (ix+1)
+    jp z,gls_n
+    ld a,e
+    or (ix+2)
+    ld e,a
+gls_n:
+    inc ix
+    inc ix
+    inc ix
+    jr gls_t
+gls_d:
+    ld a,e
+    ld (gl_held),a
+    ld b,a
+    ld a,(gl_prev)
+    cpl
+    and b
+    ld (gl_press),a
+    ld a,b
+    ld (gl_prev),a
+    or a
+    ret z
+    xor a
+    ld (v_idle),a               ; a key press counts as activity for the auto-sleep timer
+    ret
+gl_ktab:                        ; matrix row, bit mask, game key
+    .db 0,$02,GK_L
+    .db 0,$04,GK_R
+    .db 0,$08,GK_U
+    .db 0,$01,GK_D
+    .db 1,$01,GK_A              ; ENTER
+    .db 6,$20,GK_A              ; 2ND
+    .db 5,$80,GK_B              ; ALPHA
+    .db 6,$80,GK_B              ; DEL
+    .db 6,$40,GK_P              ; MODE
+    .db 1,$40,GK_Q              ; CLEAR
+    .db $FF
+
+; ---- frame pacing ---------------------------------------------------------------------------------------------------------
+gl_tick:                        ; wait for the next frame (HALT between ticks), then scan the keys; auto-sleeps when the idle timer says so
+gltk_w:
+    ld a,(v_flags)
+    bit F_WANTSLEEP,a
+    jr z,gltk_ns
+    call S_POWER_SLEEP
+    ld a,1
+    ld (gl_full),a
+    ld hl,(v_tick)
+    ld (gl_next),hl
+gltk_ns:
+    ld hl,(v_tick)
+    ld de,(gl_next)
+    or a
+    sbc hl,de
+    bit 7,h
+    jr z,gltk_go
+    call S_FRAME_WAIT
+    jr gltk_w
+gltk_go:
+    ld a,h
+    or a
+    jr nz,gltk_late
+    ld a,l
+    cp 16
+    jr c,gltk_ok
+gltk_late:                      ; far behind (a pause, a long redraw): do not try to catch up
+    ld hl,(v_tick)
+    ld (gl_next),hl
+gltk_ok:
+    ld a,(gl_per)
+    ld e,a
+    ld d,0
+    ld hl,(gl_next)
+    add hl,de
+    ld (gl_next),hl
+    jp gl_scan
+
+gl_resync:                      ; after a blocking screen: the picture must be drawn again
+    ld hl,(v_tick)
+    ld (gl_next),hl
+    ld hl,$FFFF
+    ld (gl_sig),hl
+    ret
+
+gl_changed:                     ; HL = state block, B = its length -> Z = identical to the block at the previous call (nothing to redraw)
+    ld c,0
+    ld d,0
+glch_l:
+    ld a,(hl)
+    inc hl
+    xor c
+    rlca
+    ld c,a
+    add a,d
+    ld d,a
+    djnz glch_l
+    ld hl,gl_sig
+    ld a,(hl)
+    cp c
+    jr nz,glch_n
+    inc hl
+    ld a,(hl)
+    cp d
+    ret z
+    dec hl
+glch_n:
+    ld (hl),c
+    inc hl
+    ld (hl),d
+    or 1
+    ret
+
+; ---- random --------------------------------------------------------------------------------------------------------------
+gl_rnd:                         ; -> A = 0..255 (16-bit Galois LFSR, taps $B400)
+    push hl
+    ld hl,(gl_rng)
+    ld a,h
+    or l
+    jr nz,glr_ok
+    ld hl,$ACE1
+glr_ok:
+    srl h
+    rr l
+    jr nc,glr_no
+    ld a,h
+    xor $B4
+    ld h,a
+glr_no:
+    ld (gl_rng),hl
+    ld a,h
+    xor l
+    pop hl
+    ret
+
+gl_rnd_n:                       ; A = n (1..255) -> A = random 0..n-1
+    push bc
+    ld b,a
+glrn_l:
+    call gl_rnd
+    ld c,a
+    ld a,b
+    cp 2
+    ld a,c
+    jr c,glrn_z
+glrn_m:
+    cp b
+    jr c,glrn_x
+    sub b
+    jr glrn_m
+glrn_x:
+    pop bc
+    ret
+glrn_z:
+    xor a
+    pop bc
+    ret
+
+; ---- drawing -------------------------------------------------------------------------------------------------------------
+gl_addr:                        ; B = x pixel, C = y -> HL = &GBUF1[y*12 + x/8]   (clobbers A, DE)
+    ld l,c
+    ld h,0
+    add hl,hl
+    add hl,hl
+    ld d,h
+    ld e,l
+    add hl,hl
+    add hl,de
+    ld a,b
+    rrca
+    rrca
+    rrca
+    and $1F
+    ld e,a
+    ld d,0
+    add hl,de
+    ld de,GBUF1
+    add hl,de
+    ret
+
+gl_ap:                          ; apply mask C at (HL) according to gl_mode; keeps HL, B, C
+    ld a,(gl_mode)
+    or a
+    jr z,glap_clr
+    dec a
+    jr z,glap_set
+    ld a,(hl)
+    xor c
+    ld (hl),a
+    ret
+glap_set:
+    ld a,(hl)
+    or c
+    ld (hl),a
+    ret
+glap_clr:
+    ld a,c
+    cpl
+    and (hl)
+    ld (hl),a
+    ret
+
+gl_shr:                         ; A >>= L
+    inc l
+    dec l
+    ret z
+glsr_l:
+    srl a
+    dec l
+    jr nz,glsr_l
+    ret
+gl_shl:                         ; A <<= L
+    inc l
+    dec l
+    ret z
+glsl_l:
+    sla a
+    dec l
+    jr nz,glsl_l
+    ret
+
+gl_rect:                        ; B = x, C = y, D = w, E = h, A = mode (0 clear, 1 set, 2 xor); no clipping, w,h >= 1
+    ld (gl_mode),a
+    ld a,d
+    or a
+    ret z
+    ld a,e
+    or a
+    ret z
+    push af
+    push bc
+    push de
+    push hl
+    ld a,e
+    ld (gl_rh),a
+    ld a,b
+    add a,d
+    dec a
+    ld (gl_rx1),a
+    ld a,b
+    and 7
+    ld l,a
+    ld a,$FF
+    call gl_shr
+    ld (gl_lm),a
+    ld a,(gl_rx1)
+    and 7
+    cpl
+    and 7
+    ld l,a
+    ld a,$FF
+    call gl_shl
+    ld (gl_rm),a
+    ld a,b
+    rrca
+    rrca
+    rrca
+    and $1F
+    ld (gl_rb0),a
+    ld a,(gl_rx1)
+    rrca
+    rrca
+    rrca
+    and $1F
+    ld (gl_rb1),a
+    call gl_addr
+glrc_row:
+    push hl
+    ld a,(gl_rb1)
+    ld b,a
+    ld a,(gl_rb0)
+    cp b
+    jr nz,glrc_multi
+    ld a,(gl_lm)
+    ld c,a
+    ld a,(gl_rm)
+    and c
+    ld c,a
+    call gl_ap
+    jr glrc_next
+glrc_multi:
+    ld a,(gl_lm)
+    ld c,a
+    call gl_ap
+    inc hl
+    ld a,(gl_rb0)
+    ld d,a
+    ld a,b
+    sub d
+    dec a
+    jr z,glrc_nomid
+    ld b,a
+    ld c,$FF
+glrc_mid:
+    call gl_ap
+    inc hl
+    djnz glrc_mid
+glrc_nomid:
+    ld a,(gl_rm)
+    ld c,a
+    call gl_ap
+glrc_next:
+    pop hl
+    ld de,12
+    add hl,de
+    ld a,(gl_rh)
+    dec a
+    ld (gl_rh),a
+    jr nz,glrc_row
+    pop hl
+    pop de
+    pop bc
+    pop af
+    ret
+
+gl_plot:                        ; B = x, C = y: set one pixel
+    ld d,1
+    ld e,1
+    ld a,1
+    jp gl_rect
+
+gl_box:                         ; B = x, C = y, D = w, E = h: 1-pixel outline (set)
+    push bc
+    push de
+    push hl
+    ld (glb_x),bc
+    ld a,d
+    ld (glb_w),a
+    ld a,e
+    ld (glb_h),a
+    ld e,1                      ; top
+    ld a,1
+    call gl_rect
+    ld a,(glb_h)                ; bottom
+    dec a
+    add a,c
+    ld c,a
+    ld a,(glb_w)
+    ld d,a
+    ld e,1
+    ld a,1
+    call gl_rect
+    ld bc,(glb_x)               ; left
+    ld a,(glb_h)
+    ld e,a
+    ld d,1
+    ld a,1
+    call gl_rect
+    ld bc,(glb_x)               ; right
+    ld a,(glb_w)
+    dec a
+    add a,b
+    ld b,a
+    ld a,(glb_h)
+    ld e,a
+    ld d,1
+    ld a,1
+    call gl_rect
+    pop hl
+    pop de
+    pop bc
+    ret
+
+; ---- text ----------------------------------------------------------------------------------------------------------------
+gl_text:                        ; HL = string, B = column (4 px each), C = y
+    jp S_PUTS_SMALL
+
+gl_num:                         ; HL = value, B = column, C = y
+    jp S_PRINT_U16
+
+gl_len:                         ; HL = string -> A = length (HL kept)
+    push hl
+    ld b,0
+gll_l:
+    ld a,(hl)
+    or a
+    jr z,gll_e
+    inc hl
+    inc b
+    jr gll_l
+gll_e:
+    ld a,b
+    pop hl
+    ret
+
+gl_center:                      ; HL = string, C = y: horizontally centred on the 24-column grid
+    call gl_len
+    ld b,a
+    ld a,24
+    sub b
+    jr nc,glc_p
+    xor a
+glc_p:
+    srl a
+    ld b,a
+    jp S_PUTS_SMALL
+
+gl_lang:                        ; HL = table of two strings (ES, EN) -> HL = the one of the current language
+    ld a,(s_lang)
+    or a
+    ret z
+glla_l:
+    ld a,(hl)
+    inc hl
+    or a
+    jr nz,glla_l
+    ret
+
+gl_overlay:                     ; HL = line 1 (title), DE = line 2 (hint, may be 0): a centred box over whatever is on screen
+    push hl
+    push de
+    ld b,0
+    ld c,14
+    ld d,96
+    ld e,36
+    xor a
+    call gl_rect
+    ld b,1
+    ld c,15
+    ld d,94
+    ld e,34
+    call gl_box
+    pop de
+    pop hl
+    ld c,20
+    push de
+    call gl_center
+    pop hl
+    ld a,h
+    or l
+    ret z
+    ld c,30
+    jp gl_center
+
+gl_pause:                       ; pause overlay.  CF = the player chose to leave
+    ld hl,glp_t
+    call gl_lang
+    push hl
+    ld hl,glp_h
+    call gl_lang
+    ex de,hl
+    pop hl
+    call gl_overlay
+    call gl_flush
+glp_w:
+    call gl_tick
+    ld a,(gl_press)
+    and GK_P|GK_A
+    jr nz,glp_go
+    ld a,(gl_press)
+    and GK_Q
+    jr z,glp_w
+    scf
+    ret
+glp_go:
+    call gl_resync
+    or a
+    ret
+glp_t:  .db "PAUSA",0,"PAUSED",0
+glp_h:  .db "ENTER SIGUE CLEAR SALE",0,"ENTER GO ON CLEAR EXIT",0
+
+gl_hs_ptr:                      ; -> HL = &high score of the current game
+    ld a,(gl_gid)
+    add a,a
+    ld e,a
+    ld d,0
+    ld hl,GL_HS
+    add hl,de
+    ret
+
+gl_hs_get:                      ; -> HL = best score
+    call gl_hs_ptr
+    ld a,(hl)
+    inc hl
+    ld h,(hl)
+    ld l,a
+    ret
+
+gl_hs_set:                      ; HL = score: stores it when it beats the best; gl_new = 1 then
+    push hl
+    xor a
+    ld (gl_new),a
+    call gl_hs_get
+    ex de,hl
+    pop hl
+    push hl
+    or a
+    sbc hl,de                   ; score - best
+    pop hl
+    ret c
+    ret z
+    ex de,hl
+    call gl_hs_ptr
+    ld (hl),e
+    inc hl
+    ld (hl),d
+    ld a,1
+    ld (gl_new),a
+    ex de,hl
+    ret
+
+gl_result:                      ; HL = (ES, EN) title pair: overlay with the standard hint; CF = leave, NC = play again
+    call gl_lang
+    push hl
+    ld hl,glo_h
+    call gl_lang
+    ex de,hl
+    pop hl
+    call gl_overlay
+    call gl_flush
+    jp glo_w
+
+gl_gameover:                    ; HL = final score -> overlay; CF = quit, NC = play again
+    call gl_hs_set
+    ld hl,glo_t
+    call gl_lang
+    push hl
+    ld hl,glo_h
+    call gl_lang
+    ex de,hl
+    pop hl
+    call gl_overlay
+    ld a,(gl_new)
+    or a
+    jr z,glo_nb
+    ld hl,glo_b
+    call gl_lang
+    ld c,40
+    call gl_center
+glo_nb:
+    call gl_flush
+glo_w:
+    call gl_tick
+    ld a,(gl_press)
+    and GK_A
+    jr nz,glo_again
+    ld a,(gl_press)
+    and GK_Q
+    jr z,glo_w
+    scf
+    ret
+glo_again:
+    call gl_resync
+    or a
+    ret
+glo_t:  .db "FIN DEL JUEGO",0,"GAME OVER",0
+glo_h:  .db "ENTER OTRA CLEAR SALE",0,"ENTER AGAIN CLEAR EXIT",0
+glo_b:  .db "NUEVO RECORD",0,"NEW RECORD",0
+
+; ---- sprites and numbers at any pixel position --------------------------------------------------------------------------------
+gl_spr:                         ; HL = sprite (D rows, one byte each, MSB = leftmost), B = x, C = y, A = mode (1 set, 0 clear, 2 xor)
+    ld (gl_mode),a
+    push af
+    push bc
+    push de
+    push hl
+    push ix
+    push hl
+    pop ix
+    ld a,b
+    and 7
+    ld (gsp_s),a
+    ld a,b
+    rrca
+    rrca
+    rrca
+    and $1F
+    ld (gsp_xb),a
+    ld a,d
+    ld (gsp_n),a
+    call gl_addr
+    ld (gsp_p),hl
+glsp_r:
+    ld a,(ix+0)
+    inc ix
+    ld h,a
+    ld l,0
+    ld a,(gsp_s)
+    or a
+    jr z,glsp_ns
+    ld b,a
+glsp_sh:
+    srl h
+    rr l
+    djnz glsp_sh
+glsp_ns:
+    ex de,hl                    ; D = first byte mask, E = second
+    ld hl,(gsp_p)
+    ld c,d
+    call gl_ap
+    ld a,(gsp_xb)
+    cp 11
+    jr z,glsp_n2
+    inc hl
+    ld c,e
+    call gl_ap
+    dec hl
+glsp_n2:
+    ld bc,12
+    add hl,bc
+    ld (gsp_p),hl
+    ld a,(gsp_n)
+    dec a
+    ld (gsp_n),a
+    jr nz,glsp_r
+    pop ix
+    pop hl
+    pop de
+    pop bc
+    pop af
+    ret
+
+gl_dnum:                        ; HL = value (0..65535), B = x, C = y: decimal number in a 3x5 font, 4 pixels per digit, any x
+    push af
+    push bc
+    push de
+    push hl
+    push ix
+    ld a,b
+    ld (gld_x),a
+    ld a,c
+    ld (gld_y),a
+    xor a
+    ld (gld_f),a
+    ld ix,gl_pw
+    ld b,5
+gld_l:
+    push bc
+    ld c,(ix+0)
+    ld b,(ix+1)
+    inc ix
+    inc ix
+    xor a
+gld_sub:
+    or a
+    sbc hl,bc
+    jr c,gld_add
+    inc a
+    jr gld_sub
+gld_add:
+    add hl,bc
+    pop bc
+    ld c,a                      ; digit
+    ld a,(gld_f)
+    or c
+    jr nz,gld_emit
+    ld a,b
+    cp 1
+    jr nz,gld_skip              ; no leading zeros, except the last digit
+gld_emit:
+    ld a,1
+    ld (gld_f),a
+    push bc
+    push hl
+    ld a,c                      ; sprite = gl_dig + digit * 5
+    add a,a
+    add a,a
+    add a,c
+    ld e,a
+    ld d,0
+    ld hl,gl_dig
+    add hl,de
+    ld a,(gld_x)
+    ld b,a
+    ld a,(gld_y)
+    ld c,a
+    ld d,5
+    ld a,1
+    call gl_spr
+    ld a,(gld_x)
+    add a,4
+    ld (gld_x),a
+    pop hl
+    pop bc
+gld_skip:
+    djnz gld_l
+    pop ix
+    pop hl
+    pop de
+    pop bc
+    pop af
+    ret
+gl_pw:  .dw 10000,1000,100,10,1
+gl_dig:                         ; 3x5 digits, bits 7..5
+    .db $E0,$A0,$A0,$A0,$E0
+    .db $40,$C0,$40,$40,$E0
+    .db $E0,$20,$E0,$80,$E0
+    .db $E0,$20,$E0,$20,$E0
+    .db $A0,$A0,$E0,$20,$20
+    .db $E0,$80,$E0,$20,$E0
+    .db $E0,$80,$E0,$A0,$E0
+    .db $E0,$20,$20,$20,$20
+    .db $E0,$A0,$E0,$A0,$E0
+    .db $E0,$A0,$E0,$20,$E0
+
+gl_dwidth:                      ; HL = value -> A = pixel width of gl_dnum's output (4 per digit - 1)
+    ld a,3
+    ld de,10
+    or a
+    sbc hl,de
+    ret c
+    add a,4
+    ld de,90
+    sbc hl,de
+    ret c
+    add a,4
+    ld de,900
+    sbc hl,de
+    ret c
+    add a,4
+    ld de,9000
+    sbc hl,de
+    ret c
+    add a,4
+    ret
+
+; ---- LCD update: only what changed ------------------------------------------------------------------------------------------
+; GBUF2 keeps a copy of what the LCD shows.  A full screen costs 768 x 156 T-states (8 ms); most game frames change a handful of 8x8 tiles.
+gl_flush:
+    ld a,(gl_full)
+    or a
+    jr z,glf_diff
+    xor a
+    ld (gl_full),a
+    call S_LCD_BLIT
+    ld hl,GBUF1
+    ld de,GBUF2
+    ld bc,768
+    ldir
+    ret
+glf_diff:
+    ld hl,gl_tiles
+    ld de,gl_tiles+1
+    ld bc,11
+    ld (hl),0
+    ldir
+    xor a
+    ld (glf_bm),a
+    ld hl,GBUF1
+    ld de,GBUF2
+    ld c,0                      ; C = row
+glf_row:
+    ld a,c                      ; every 8 rows the band mask moves up one bit (1, 2, 4 ... 128)
+    and 7
+    jr nz,glf_nm
+    ld a,(glf_bm)
+    or a
+    jr nz,glf_shl
+    ld a,1
+    jr glf_stm
+glf_shl:
+    add a,a
+glf_stm:
+    ld (glf_bm),a
+glf_nm:
+    ld b,12
+glf_cmp:
+    ld a,(de)
+    xor (hl)
+    jr nz,glf_dif
+glf_nx:
+    inc hl
+    inc de
+    djnz glf_cmp
+    inc c
+    ld a,c
+    cp 64
+    jr nz,glf_row
+    jr glf_send
+glf_dif:
+    push hl
+    ld a,12
+    sub b
+    ld hl,gl_tiles
+    add a,l
+    ld l,a
+    ld a,(glf_bm)
+    or (hl)
+    ld (hl),a
+    pop hl
+    jr glf_nx
+glf_send:                       ; every marked tile: 8 data bytes (also copied into GBUF2)
+    ld c,0
+glf_c:
+    ld hl,gl_tiles
+    ld a,c
+    add a,l
+    ld l,a
+    ld a,(hl)
+    or a
+    jr z,glf_nc
+    ld d,a
+    ld e,0
+glf_k:
+    srl d
+    jr nc,glf_nk
+    push de
+    push bc
+    ld a,e
+    add a,a
+    add a,a
+    add a,a
+    or LCD_ROW
+    call S_LCD_CMD
+    ld a,c
+    or LCD_COL
+    call S_LCD_CMD
+    ld l,e                      ; HL = GBUF1 + 96 * band + column
+    ld h,0
+    add hl,hl
+    ld d,h
+    ld e,l
+    add hl,hl
+    add hl,de
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    ld e,c
+    ld d,0
+    add hl,de
+    ld de,GBUF1
+    add hl,de                   ; HL = the tile in the picture
+    push hl
+    ld de,GBUF2-GBUF1
+    add hl,de
+    push hl
+    pop ix                      ; IX = the same tile in the copy
+    pop hl
+    ld de,12
+    ld b,8
+glf_d:
+    ld a,(hl)
+    out (P_LCDDATA),a
+    ld (ix+0),a
+    add hl,de
+    add ix,de
+    ex (sp),hl
+    ex (sp),hl
+    ex (sp),hl
+    ex (sp),hl
+    ex (sp),hl
+    ex (sp),hl
+    djnz glf_d
+    pop bc
+    pop de
+glf_nk:
+    inc e
+    ld a,e
+    cp 8
+    jr nz,glf_k
+glf_nc:
+    inc c
+    ld a,c
+    cp 12
+    jr nz,glf_c
+    ret

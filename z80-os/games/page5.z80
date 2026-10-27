@@ -1,0 +1,265 @@
+; =============================================================================
+; Flash page 5: games.  CHIP-8 interpreter + pack menus (the ROMs live in page 6) + streamed-game client.
+; =============================================================================
+#include "kernel/superos.inc"
+#include "kernel/sys.inc"
+
+pk_dir      .equ $A200          ; copy of the page 6 directory (1 + 12 x 16 bytes)
+pk_list     .equ $A2D0          ; indices of the games of the chosen pack
+pk_buf      .equ $A2E0          ; one menu line
+pk_id       .equ $A2F8
+pk_n        .equ $A2F9
+pk_sel      .equ $A2FA
+pk_font     .equ $A2FB
+pk_j        .equ $A2FC
+pk_game     .equ $A2FD
+
+.org $4000
+P5_JT:
+    jp pack_a                   ; $4000
+    jp pack_b                   ; $4003
+    jp pack_c                   ; $4006
+    jp c8_prepare               ; $4009
+    jp c8_run_n                 ; $400C
+    jp c8_reset                 ; $400F
+    jp c8_play                  ; $4012
+    jp c8_run_ram               ; $4015  HL = CHIP-8 ROM in RAM, BC = length (OTA games)
+    jp game_tetris              ; $4018
+    jp game_snake               ; $401B
+    jp game_breakout            ; $401E
+    jp game_pong                ; $4021
+    jp game_2048                ; $4024
+    jp game_invaders            ; $4027
+    jp game_mines               ; $402A
+    jp pack_all                 ; $402D
+P5_JT_END:
+
+#include "games/chip8.z80"
+#include "games/glib.z80"
+#include "games/tetris.z80"
+#include "games/snake.z80"
+#include "games/breakout.z80"
+#include "games/pong.z80"
+#include "games/g2048.z80"
+#include "games/invaders.z80"
+#include "games/mines.z80"
+
+c8_run_ram:
+    ld a,$FF
+    call c8_prepare
+    call c8_play
+    xor a
+    jp S_RAM_PAGE
+
+pack_a:
+    xor a
+    jr pack_menu
+pack_b:
+    ld a,1
+    jr pack_menu
+pack_all:                       ; every CHIP-8 game in one menu
+    ld a,$FF
+pack_menu:
+    ld (pk_id),a
+    ld a,(v_font)
+    ld (pk_font),a
+    xor a
+    ld (v_font),a
+    ld a,6
+    ld hl,$4000
+    ld de,pk_dir
+    ld bc,193
+    call S_BANK_COPY
+    xor a
+    ld (pk_n),a
+    ld (pk_sel),a
+    ld ix,pk_dir+1
+    ld a,(pk_dir)
+    ld b,a
+    ld c,0
+    ld hl,pk_list
+pm_b:
+    ld a,b
+    or a
+    jr z,pm_draw
+    ld a,(pk_id)
+    cp $FF
+    jr z,pm_take
+    cp (ix+10)
+    jr nz,pm_nx
+pm_take:
+    ld (hl),c
+    inc hl
+    ld a,(pk_n)
+    inc a
+    ld (pk_n),a
+pm_nx:
+    ld de,16
+    add ix,de
+    inc c
+    dec b
+    jr pm_b
+pm_draw:
+    ld hl,pk_t_a
+    ld a,(pk_id)
+    or a
+    jr z,pm_t
+    ld hl,pk_t_b
+    cp $FF
+    jr nz,pm_t
+    ld hl,pk_t_all
+    call gl_lang
+pm_t:
+    call S_UI_BEGIN
+    xor a
+    ld (pk_j),a
+pm_line:
+    ld a,(pk_j)
+    ld hl,pk_n
+    cp (hl)
+    jr z,pm_hint
+    call pk_entry               ; IX = entry of list item A
+    ld hl,pk_buf
+    ld a,(pk_j)
+    add a,'1'
+    ld (hl),a
+    inc hl
+    ld (hl),' '
+    inc hl
+    push ix
+    pop de
+    ex de,hl                    ; HL = entry name, DE = buffer
+    ld b,10
+pm_cp:
+    ld a,(hl)
+    or a
+    jr z,pm_ce
+    ld (de),a
+    inc hl
+    inc de
+    djnz pm_cp
+pm_ce:
+    xor a
+    ld (de),a
+    ld a,(pk_j)
+    ld hl,pk_sel
+    cp (hl)
+    ld a,0
+    jr nz,pm_inv
+    ld a,$F0
+pm_inv:
+    ld (v_invert),a
+    ld a,(pk_j)
+    call S_UI_LINE_Y
+    ld hl,pk_buf
+    ld b,2
+    call S_PUTS
+    xor a
+    ld (v_invert),a
+    ld hl,pk_j
+    inc (hl)
+    jr pm_line
+pm_hint:
+    ld hl,pk_h_es
+    ld a,(s_lang)
+    or a
+    jr z,pm_h
+    ld hl,pk_h_en
+pm_h:
+    ld b,0
+    ld c,58
+    call S_PUTS_SMALL
+    call S_LCD_BLIT
+    call S_WAIT_KEY
+    cp K_CLEAR
+    jr z,pm_exit
+    cp K_UP
+    jr z,pm_up
+    cp K_DOWN
+    jr z,pm_dn
+    cp K_ENTER
+    jr z,pm_go
+    ld hl,pk_digits
+    ld b,0
+pm_dg:
+    cp (hl)
+    jr z,pm_dig
+    inc hl
+    inc b
+    ld c,a
+    ld a,b
+    cp 6
+    ld a,c
+    jr c,pm_dg
+    jp pm_draw
+pm_dig:
+    ld a,b
+    ld hl,pk_n
+    cp (hl)
+    jp nc,pm_draw
+    ld (pk_sel),a
+    jr pm_go
+pm_up:
+    ld a,(pk_sel)
+    or a
+    jp z,pm_draw
+    dec a
+    ld (pk_sel),a
+    jp pm_draw
+pm_dn:
+    ld a,(pk_sel)
+    inc a
+    ld hl,pk_n
+    cp (hl)
+    jp nc,pm_draw
+    ld (pk_sel),a
+    jp pm_draw
+pm_go:
+    ld a,(pk_sel)
+    call pk_entry
+    ld c,(ix+14)
+    ld b,(ix+15)
+    ld l,(ix+12)
+    ld h,(ix+13)
+    ld a,6
+    call c8_prepare
+    call c8_play
+    xor a
+    call S_RAM_PAGE
+    jp pm_draw
+pm_exit:
+    ld a,(pk_font)
+    ld (v_font),a
+    ret
+pk_entry:                       ; A = item in the list -> IX = directory entry
+    ld e,a
+    ld d,0
+    ld hl,pk_list
+    add hl,de
+    ld a,(hl)
+    ld l,a
+    ld h,0
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    ld de,pk_dir+1
+    add hl,de
+    push hl
+    pop ix
+    ret
+
+pk_digits: .db K_1,K_2,K_3,K_4,K_5,K_6
+pk_t_a:  .db "PACK A  ARCADE",0
+pk_t_b:  .db "PACK B  ACTION",0
+pk_t_all: .db "CLASICOS CHIP-8",0,"CLASSIC CHIP-8",0
+pk_h_es: .db "ENTER=JUGAR  CLEAR=SALIR",0
+pk_h_en: .db "ENTER=PLAY  CLEAR=EXIT",0
+
+#include "games/stream.z80"
+
+#include "c8keys.inc"
+
+.echo "page5 end = "
+.echo $
+.echo "\n"

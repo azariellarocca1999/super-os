@@ -1,0 +1,312 @@
+; =============================================================================
+; TI-OS compatibility shim:  RST $28 + .dw id  (the "B_CALL" convention).
+; ~25 documented calls; anything else is counted (v_bunk) and returns with CF set.
+; Programs load at userMem ($9D95); Ion-style headers ($C9,$30,..) are detected.
+; plotSScreen ($9340) is the program frame buffer (_GrBufCpy blits it).
+; Programs that poke TI system RAM directly are not supported.
+; =============================================================================
+
+bcall_entry:
+    push hl
+    push de
+    push bc
+    push af
+    ld hl,8
+    add hl,sp                   ; -> return address (points at the .dw id)
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ex de,hl
+    ld c,(hl)
+    inc hl
+    ld b,(hl)
+    inc hl                      ; HL = return address + 2
+    ex de,hl
+    ld hl,8
+    add hl,sp
+    ld (hl),e
+    inc hl
+    ld (hl),d                   ; patch the return address past the id
+    ld hl,bcall_table
+bcall_entry_find:
+    ld a,(hl)
+    inc hl
+    ld d,(hl)
+    inc hl
+    ld e,a
+    or d
+    jr z,bcall_entry_none
+    ld a,e
+    cp c
+    jr nz,bcall_entry_skip
+    ld a,d
+    cp b
+    jr nz,bcall_entry_skip
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    jr bcall_entry_go
+bcall_entry_skip:
+    inc hl
+    inc hl
+    jr bcall_entry_find
+bcall_entry_none:
+    ld (v_blast),bc
+    ld hl,(v_bunk)
+    inc hl
+    ld (v_bunk),hl
+    ld de,bcall_unknown
+bcall_entry_go:
+    ld a,$C3
+    ld (v_bjmp),a
+    ld (v_bjmp+1),de
+    pop af
+    pop bc
+    pop de
+    pop hl
+    jp v_bjmp
+
+bcall_unknown:
+    scf
+    ret
+
+b_clrlcd:
+    push hl
+    call gfx_clear
+    call lcd_blit
+    pop hl
+    ret
+b_grbufcpy:
+    push hl
+    ld hl,PLOTSSCREEN
+    call lcd_blit_hl
+    pop hl
+    ret
+b_grbufclr:
+    push bc
+    push de
+    push hl
+    ld hl,PLOTSSCREEN
+    ld de,PLOTSSCREEN+1
+    ld bc,767
+    ld (hl),0
+    ldir
+    pop hl
+    pop de
+    pop bc
+    ret
+b_homeup:
+    xor a
+    ld (v_curcol),a
+    ld (v_currow),a
+    ret
+b_newline:
+    xor a
+    ld (v_curcol),a
+    ld a,(v_currow)
+    inc a
+    and 7
+    ld (v_currow),a
+    ret
+b_putc:
+    call b_putc_nb
+    push hl
+    call lcd_blit
+    pop hl
+    ret
+b_putc_nb:                      ; A = char at the TI text cursor (4x6 grid, below the status bar)
+    push af
+    push bc
+    push hl
+    push af
+    ld a,(v_curcol)
+    ld b,a
+    ld a,(v_currow)
+    add a,a
+    add a,a
+    add a,a
+    add a,6
+    ld c,a
+    pop af
+    call putchar3
+    ld a,(v_curcol)
+    inc a
+    cp 24
+    jr c,b_putc_ok
+    xor a
+    ld (v_curcol),a
+    ld a,(v_currow)
+    inc a
+    and 7
+    ld (v_currow),a
+    jr b_putc_done
+b_putc_ok:
+    ld (v_curcol),a
+b_putc_done:
+    pop hl
+    pop bc
+    pop af
+    ret
+b_puts:
+    push af
+b_puts_l:
+    ld a,(hl)
+    inc hl
+    or a
+    jr z,b_puts_e
+    call b_putc_nb
+    jr b_puts_l
+b_puts_e:
+    push hl
+    call lcd_blit
+    pop hl
+    pop af
+    ret
+b_disphl:
+    push af
+    push bc
+    push de
+    push hl
+    ld a,(v_curcol)
+    ld b,a
+    ld a,(v_currow)
+    add a,a
+    add a,a
+    add a,a
+    add a,6
+    ld c,a
+    call print_u16
+    call lcd_blit
+    pop hl
+    pop de
+    pop bc
+    pop af
+    ret
+b_getcsc:                       ; A = TI scan code (same numbering as key_scan)
+    push bc
+    push de
+    push hl
+    call key_scan
+    or a
+    jr nz,b_getcsc_x
+    ld bc,1                     ; legacy polling loops: HALT one tick instead of spinning
+    call task_sleep
+    xor a
+b_getcsc_x:
+    pop hl
+    pop de
+    pop bc
+    ret
+b_getkey:
+    push bc
+    push de
+    push hl
+    call wait_key
+    cp K_ENTER
+    jr nz,b_getkey_1
+    ld a,5
+    jr b_getkey_x
+b_getkey_1:
+    cp K_CLEAR
+    jr nz,b_getkey_x
+    ld a,9
+b_getkey_x:
+    pop hl
+    pop de
+    pop bc
+    ret
+b_random:
+    push hl
+    ld hl,(v_tick)
+    ld a,r
+    xor l
+    xor h
+    rlca
+    pop hl
+    ret
+b_nop:
+    or a
+    ret
+b_memclear:
+    push de
+    ld a,b
+    or c
+    jr z,b_memclear_x
+    ld (hl),0
+    dec bc
+    ld a,b
+    or c
+    jr z,b_memclear_x
+    ld d,h
+    ld e,l
+    inc de
+    ldir
+b_memclear_x:
+    pop de
+    ret
+b_memset:
+    push de
+    ld e,a
+    ld a,b
+    or c
+    jr z,b_memset_x
+    ld (hl),e
+    dec bc
+    ld a,b
+    or c
+    jr z,b_memset_x
+    ld d,h
+    ld e,l
+    inc de
+    ldir
+b_memset_x:
+    pop de
+    ret
+b_divhl10:                      ; HL = HL / 10, A = remainder
+    push bc
+    ld a,16
+    ld bc,0
+b_divhl10_l:
+    add hl,hl
+    rl c
+    ld b,a
+    ld a,c
+    cp 10
+    jr c,b_divhl10_n
+    sub 10
+    ld c,a
+    inc l
+b_divhl10_n:
+    ld a,b
+    dec a
+    jr nz,b_divhl10_l
+    ld a,c
+    pop bc
+    ret
+
+bcall_table:
+    .dw $4540,b_clrlcd,$4546,b_clrlcd,$4549,b_clrlcd
+    .dw $486A,b_grbufcpy,$4BD0,b_grbufclr,$5074,b_grbufclr,$5071,b_grbufcpy
+    .dw $4558,b_homeup,$452E,b_newline,$4504,b_putc,$4501,b_putc,$450A,b_puts,$4507,b_disphl
+    .dw $4018,b_getcsc,$4972,b_getkey,$4B79,b_random
+    .dw $4570,b_nop,$456D,b_nop,$45BE,b_nop,$45C4,b_nop,$508F,b_nop
+    .dw $4C30,b_memclear,$4C33,b_memset,$400F,b_divhl10
+    .dw 0,0
+
+; program loader: HL = image, BC = length (copied to userMem and run). Ion/Mirage header C9 30 xx
+run_program:
+    ld de,USERMEM
+    ldir
+run_userprog:
+    ld hl,USERMEM
+    ld a,(hl)
+    cp $C9
+    jr nz,run_userprog_plain
+    inc hl
+    ld a,(hl)
+    cp $30
+    jr nz,run_userprog_plain
+    or a                        ; CF=0 so the header's JR NC takes the branch
+    jp USERMEM+1
+run_userprog_plain:
+    jp USERMEM

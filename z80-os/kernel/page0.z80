@@ -1,0 +1,869 @@
+; =============================================================================
+; Super-OS -- flash page 0: kernel core
+;   vectors, boot (15 MHz, banking), ISR + PREEMPTIVE scheduler, tasks/events,
+;   keyboard, syscall table.
+; assemble:  spasm -I z80-os z80-os\kernel\page0.z80 build\page0.bin   (see scripts\2_build_all.ps1)
+; =============================================================================
+#include "kernel/superos.inc"
+#include "bringup.inc"          ; generated: #define BRINGUP_SWEEP 0 / 1 (tools/build_bringup.py builds the contrast-sweep variant)
+
+.org $0000
+reset:
+    di
+    jp boot
+.fill $0008-$,$FF
+    ret                         ; RST $08 reserved
+.fill $0028-$,$FF
+    jp bcall_entry              ; RST $28: TI-OS B_CALL compatibility shim
+.fill $0038-$,$FF
+    jp isr                      ; IM 1 vector
+.fill $0053-$,$FF
+    jp boot                     ; the factory boot code enters a validated OS here (KnightOS / WikiTI OS header convention)
+.fill $0066-$,$FF               ; $0056 stays $FF and $0057 gets $A5 from rabbitsign: the boot code's OS-valid mark
+    retn                        ; NMI (unused)
+
+; -----------------------------------------------------------------------------
+; Syscall table at fixed addresses (UI page, apps and loaded programs use these)
+; -----------------------------------------------------------------------------
+.fill $0100-$,$FF
+    jp lcd_blit                 ; $0100
+    jp gfx_clear                ; $0103
+    jp putchar                  ; $0106  B=col C=y A=char  (current font)
+    jp puts                     ; $0109  HL=str B=col C=y
+    jp wait_key                 ; $010C  -> A
+    jp key_poll                 ; $010F  -> A or 0
+    jp task_sleep               ; $0112  BC=ticks (0 = yield)
+    jp task_wait                ; $0115  HL=event mask -> A
+    jp event_post               ; $0118  HL=event mask
+    jp gfx_invert               ; $011B  B=xbyte C=y D=wbytes E=h
+    jp gfx_fill                 ; $011E  B=xbyte C=y D=wbytes E=h A=value
+    jp bank_copy                ; $0121  A=page HL=src DE=dst BC=len
+    jp fs_load                  ; $0124  HL=name DE=dest -> BC=len CF=notfound
+    jp link_request             ; $0127  A=cmd HL=payload B=len -> HL,BC,CF
+    jp power_sleep              ; $012A
+    jp power_apply              ; $012D
+    jp settings_save            ; $0130
+    jp print_u16                ; $0133  HL=value B=col C=y
+    jp dzx0_standard            ; $0136
+    jp set_mode                 ; $0139  A=0 static / 1 animated
+    jp flash_write_byte         ; $013C  guarded
+    jp gray_cycle               ; $013F
+    jp call_page                ; $0142  A=page HL=addr
+    jp run_userprog             ; $0145
+    jp status_draw              ; $0148  repaint the 6-px status bar
+    jp font_toggle              ; $014B
+    jp set_font                 ; $014E  A=0/1
+    jp ram_page                 ; $0151  A=RAM page 0-7 into $C000
+    jp rtc_get                  ; $0154  -> H=hour L=minute
+    jp rtc_set                  ; $0157  H=hour L=minute
+    jp battery_read             ; $015A  -> A=0..3
+    jp gfx_hline                ; $015D  C=y A=pattern
+    jp puts_small               ; $0160  HL=str B=col C=y (3x5 font regardless of mode)
+    jp frame_wait               ; $0163
+    jp link_esp_sleep           ; $0166  ask the link task to put the ESP32 to sleep
+    jp pkg_install              ; $0169  HL=name DE=data BC=len A=type -> CF failed
+    jp pkg_entry                ; $016C  A=index -> HL=PKGREC (16 B), CF = free
+    jp pkg_load                 ; $016F  A=index DE=dest -> BC=len
+    jp pkg_delete               ; $0172  A=index
+    jp pkg_format               ; $0175
+    jp flash_erase_sector       ; $0178  B=page inside a sector (guarded)
+    jp pkg_find                 ; $017B  HL=name -> A=index, CF=not found
+    jp flash_write_block        ; $017E  A=page HL=addr DE=src BC=len (guarded)
+    jp lcd_cmd                  ; $0181  A=command (raw LCD command, paced)
+    jp ui_begin                 ; $0184  HL=title string: clear, status bar, title bar
+    jp ui_line_y                ; $0187  A=line -> C=y for the current font
+    jp ui_cols                  ; $018A  -> A = 24 or 16
+    jp ui_wait_any              ; $018D  blit + wait key
+    jp inflate_reply            ; $0190  HL=zx0 stream -> TEXTBUF
+    jp text_edit                ; $0193  HL=title A=flags -> EDBUF, CF=cancel
+    jp viewer                   ; $0196  TEXTBUF text viewer
+    jp call_pagex               ; $0199  A=page IX=routine (HL, DE, BC preserved)
+    jp link_direct              ; $019C  like link_request but runs the exchange in the caller (streaming loops)
+
+.fill $0200-$,$FF
+; -----------------------------------------------------------------------------
+boot:
+    di
+    ld a,1                      ; boot progress bar (stage 1 = entered): see crumb_ns
+    ld ix,$+7
+    jp crumb_ns
+#if BRINGUP_SWEEP
+    ld ix,$+7                   ; bring-up builds only: sweep the contrast so a "blank screen" can be told from a contrast problem
+    jp crumb_sweep
+#endif
+    ld a,TMR_SLOW
+    out (P_MEMMAP),a            ; map mode 0, slowest legacy timer, battery threshold 0
+    ld a,1
+    out (P_SPEED),a             ; 15 MHz
+    xor a
+    out (P_RAMPAGE),a           ; $C000 -> RAM page $80
+    ld a,PG_UI
+    out (P_BANKA),a
+    ld a,RAM_BASE+1
+    out (P_BANKB),a             ; $8000 -> RAM page $81 (data, stacks, executable)
+    ld a,$FF
+    out (P_KEYS),a
+    xor a                       ; execution protection ports, as KnightOS sets them on a real TI-83+SE: RAM $25 = 0, $26 = $FF (run code anywhere
+    out ($25),a                 ; in RAM: the flash-programming stub lives at $8F00), flash $22 / $23 = $FF
+    dec a
+    out ($26),a
+    out ($22),a
+    out ($23),a
+    ld sp,SYSSTK
+    ld a,2                      ; stage 2: ports, banking and the stack are set
+    ld ix,$+7
+    jp crumb_ns
+    ld hl,VARS                  ; clear kernel variables (settings survive: battery-backed RAM)
+    ld de,VARS+1
+    ld bc,$00FF
+    ld (hl),0
+    ldir
+    ld a,(crash_mg)             ; the marker survived: the last run did not end through deep sleep -> unexpected reset
+    cp $A5
+    jr nz,boot_nocrash
+    ld a,(crash_mg+1)
+    cp $C3
+    jr nz,boot_nocrash
+    ld hl,(crash_pc)
+    ld (v_cpc),hl
+    ld hl,(crash_sp)
+    ld (v_csp),hl
+    ld a,1
+    ld (v_crash),a
+boot_nocrash:
+    ld a,$A5
+    ld (crash_mg),a
+    ld a,$C3
+    ld (crash_mg+1),a
+    ld hl,GBUF1
+    ld de,GBUF1+1
+    ld bc,1535
+    ld (hl),0
+    ldir
+    ld hl,TCB
+    ld de,TCB+1
+    ld bc,(NTASKS*TCB_SIZE)-1
+    ld (hl),0
+    ldir
+    ld a,3                      ; stage 3: RAM cleared
+    ld ix,$+7
+    jp crumb_ns
+    call settings_load
+    ld a,4                      ; stage 4: settings loaded
+    ld ix,$+7
+    jp crumb_ns
+    call assets_load
+    ld a,5                      ; stage 5: fonts / icons decompressed
+    ld ix,$+7
+    jp crumb_ns
+    call lcd_init
+    ld a,6                      ; stage 6: LCD driver initialised (this wipes the bar; every stage redraws all its blocks)
+    ld ix,$+7
+    jp crumb_ns
+    ld a,(s_font)
+    ld (v_font),a
+    call battery_poll
+    ld a,7                      ; stage 7: battery read
+    ld ix,$+7
+    jp crumb_ns
+    ld a,1
+    ld (v_statbar),a
+    ld a,INT_RUN
+    ld (v_runmask),a
+    ld a,QUANTUM
+    ld (v_quantum),a
+    ; crystal timer 1: 128 Hz / 128 = 1 s, loop + interrupt (the real-time clock)
+    ld a,$46
+    out (P_CT1_FREQ),a
+    ld a,3
+    out (P_CT1_LOOP),a
+    ld a,128
+    out (P_CT1_CNT),a
+    ; tasks
+    ld a,ST_READY
+    ld (TCB+4),a                ; task 0 = idle (this very context)
+    ld a,T_UI
+    ld hl,UI_ENTRY
+    call task_create
+    ld a,T_POWER
+    ld hl,power_task
+    call task_create
+    ld a,T_LINK
+    ld hl,link_task
+    call task_create
+    ld a,8                      ; stage 8: tasks created, interrupts about to be enabled
+    ld ix,$+7
+    jp crumb_ns
+    ld a,INT_RUN
+    out (P_INTMASK),a
+    im 1
+    ei
+    ld a,9                      ; stage 9: interrupts are on (if the UI draws, this bar is replaced by the home screen)
+    ld ix,$+7
+    jp crumb_ns
+idle_task:
+    halt                        ; the CPU clock stops here whenever nothing is runnable
+    ld hl,(v_halts)
+    inc hl
+    ld (v_halts),hl
+    jr idle_task
+
+; -----------------------------------------------------------------------------
+; Boot progress bar.  A = stage (1..12), IX = return address; no stack, no RAM, no other routine: it must work even if the memory
+; map, the stack or the LCD driver is wrong.  Draws A solid 8x8 blocks along the top-left of the LCD (every stage redraws all blocks).
+; On a unit that shows nothing after "installing fine", the last block that appears says how far the boot got.
+; -----------------------------------------------------------------------------
+crumb_ns:
+    ld e,a                      ; blocks to draw
+    ld a,LCD_8BIT
+    out (P_LCDCMD),a
+    ld b,40
+    djnz $
+    ld a,LCD_XINC
+    out (P_LCDCMD),a
+    ld b,40
+    djnz $
+    ld a,LCD_ON
+    out (P_LCDCMD),a
+    ld b,40
+    djnz $
+    ld a,$17                    ; LCD power / bias commands: KnightOS (which boots on a real TI-83+SE) sends 05 01 03 17 0B and then the contrast;
+    out (P_LCDCMD),a            ; a driver written from the emulator's model left them out, and a real panel can stay blank without them
+    ld b,40
+    djnz $
+    ld a,$0B
+    out (P_LCDCMD),a
+    ld b,40
+    djnz $
+    ld a,e
+    cp 6
+    jr nc,crumb_nocontrast      ; from stage 6 on the real contrast (profile + saved trim) is already set: leave it alone
+    ld a,LCD_CONTR+52           ; $F4: the value KnightOS uses
+    out (P_LCDCMD),a
+    ld b,40
+    djnz $
+crumb_nocontrast:
+    ld d,0                      ; block index
+crumb_blk:
+    ld a,LCD_ROW
+    out (P_LCDCMD),a
+    ld b,40
+    djnz $
+    ld a,LCD_COL
+    add a,d
+    out (P_LCDCMD),a
+    ld b,40
+    djnz $
+    ld c,8
+crumb_row:
+    ld a,$FF
+    out (P_LCDDATA),a
+    ld b,40
+    djnz $
+    dec c
+    jr nz,crumb_row
+    inc d
+    ld a,d
+    cp e
+    jr c,crumb_blk
+    jp (ix)
+
+#if BRINGUP_SWEEP
+crumb_sweep:                    ; contrast 0..63, ~60 ms per step at 15 MHz (slower at 6 MHz); ends at 52 ($F4)
+    ld d,0
+crumb_sw_l:
+    ld a,LCD_CONTR
+    add a,d
+    out (P_LCDCMD),a
+    ld hl,$4000
+crumb_sw_d:
+    dec hl
+    ld a,h
+    or l
+    jr nz,crumb_sw_d
+    inc d
+    ld a,d
+    cp 64
+    jr c,crumb_sw_l
+    ld a,LCD_CONTR+52
+    out (P_LCDCMD),a
+    jp (ix)
+#endif
+
+; -----------------------------------------------------------------------------
+; ISR -- one frame layout for interrupts and voluntary switches:
+;   [PC][AF][BC][DE][HL][IX][IY]   (IY at the lowest address)
+; -----------------------------------------------------------------------------
+isr:
+    push af
+    push bc
+    push de
+    push hl
+    push ix
+    push iy
+    ld hl,12                    ; crash trail: PC the CPU was at (below the six pushed registers) and the SP it had
+    add hl,sp
+    ld (crash_sp),hl
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ld (crash_pc),de
+    in a,(P_MEMMAP)
+    ld c,a                      ; C = interrupt sources
+    and $17
+    cpl
+    out (P_STATUS),a            ; acknowledge ON / T1 / T2 / link (write 0 = ack)
+    bit 5,c                     ; crystal timer 1 expired?
+    jr z,isr_nocrt
+    ld a,3
+    out (P_CT1_LOOP),a          ; re-arm loop, clears the flag
+    call rtc_tick
+isr_nocrt:
+    bit 4,c                     ; link activity -> wake the link task, mask the irq meanwhile
+    jr z,isr_nolink
+    ld a,INT_RUN_NL
+    ld (v_runmask),a
+    out (P_INTMASK),a
+    ld a,(v_flags)
+    set F_LINK,a
+    ld (v_flags),a
+    ld hl,EV_LINK
+    call event_post_isr
+isr_nolink:
+    bit 0,c                     ; ON key
+    jr z,isr_noon
+    ld a,(v_flags)
+    set F_ONKEY,a
+    ld (v_flags),a
+isr_noon:
+    ld hl,(v_tick)
+    inc hl
+    ld (v_tick),hl
+    ; ---- do we need to reschedule? -------------------------------------------------------
+    ld a,(v_resched)
+    or a
+    jr nz,isr_sched
+    ld de,(v_nextwake)          ; a sleeper is due
+    or a
+    sbc hl,de
+    bit 7,h
+    jr z,isr_sched
+    ld a,(v_cur)
+    or a
+    jr z,isr_ret                ; idle: nothing to do until something is due
+    ld hl,v_quantum
+    dec (hl)
+    jr nz,isr_ret
+isr_sched:
+    jp sched_switch
+isr_ret:
+    pop iy
+    pop ix
+    pop hl
+    pop de
+    pop bc
+    pop af
+    ei
+    ret
+
+; -----------------------------------------------------------------------------
+; Scheduler
+; -----------------------------------------------------------------------------
+tcb_ptr:                        ; A = task id -> HL = TCB (clobbers A)
+    add a,a
+    add a,a
+    add a,a
+    add a,a
+    add a,a                     ; * 32
+    ld l,a
+    ld h,TCB>>8
+    ret
+
+task_create:                    ; A = slot, HL = entry
+    ld (v_tmp0),a
+    push hl
+    ld a,(v_tmp0)
+    add a,(TASKSTK>>8)+1
+    ld h,a
+    ld l,0                      ; top of this task's stack
+    dec hl
+    dec hl
+    pop de
+    ld (hl),e
+    inc hl
+    ld (hl),d
+    dec hl
+    ld b,12                     ; iy ix hl de bc af = 12 zero bytes
+task_create_z:
+    dec hl
+    ld (hl),0
+    djnz task_create_z
+    push hl
+    ld a,(v_tmp0)
+    call tcb_ptr
+    pop de
+    ld (hl),e
+    inc hl
+    ld (hl),d
+    inc hl
+    inc hl
+    inc hl
+    ld (hl),ST_READY
+    ret
+
+; Context switch. Entry: interrupts disabled, frame already pushed on the current stack.
+sched_switch:
+    ld hl,0
+    add hl,sp
+    ex de,hl
+    ld a,(v_cur)
+    call tcb_ptr
+    ld (hl),e
+    inc hl
+    ld (hl),d                   ; save SP
+    ld a,(v_cur)
+    call tcb_ptr
+    ld de,8
+    add hl,de
+    ex de,hl
+    ld hl,SCRATCH
+    ld bc,SCRATCH_LEN
+    ldir                        ; save per-task scratch
+    xor a
+    ld (v_resched),a
+    ld hl,$7FFF
+    ld (v_mind),hl              ; smallest time-to-wake among sleepers
+    ld a,NTASKS-1
+    ld (v_tmp0),a               ; tasks left to examine
+    ld a,(v_cur)
+sw_scan:
+    inc a
+    cp NTASKS
+    jr c,sw_chk
+    ld a,1                      ; never pick idle in the round
+sw_chk:
+    ld (v_tmp1),a
+    call tcb_ptr
+    push hl
+    pop ix
+    ld a,(ix+4)
+    cp ST_READY
+    jr z,sw_run
+    cp ST_SLEEP
+    jr nz,sw_notsleep
+    ld hl,(v_tick)
+    ld e,(ix+2)
+    ld d,(ix+3)
+    or a
+    sbc hl,de                   ; tick - wake
+    bit 7,h
+    jr z,sw_wake
+    ld a,l                      ; HL = wake - tick > 0
+    cpl
+    ld l,a
+    ld a,h
+    cpl
+    ld h,a
+    inc hl
+    ld de,(v_mind)
+    or a
+    sbc hl,de
+    jr nc,sw_next
+    add hl,de
+    ld (v_mind),hl
+    jr sw_next
+sw_wake:
+    ld (ix+4),ST_READY
+    jr sw_run
+sw_notsleep:
+    cp ST_WAIT
+    jr nz,sw_next
+    ld hl,(v_evflags)
+    ld a,l
+    and (ix+5)
+    jr nz,sw_run
+    ld a,h
+    and (ix+6)
+    jr nz,sw_run
+sw_next:
+    ld hl,v_tmp0
+    dec (hl)
+    ld a,(v_tmp1)
+    jr nz,sw_scan
+    ; nobody ready: run idle; remember when the first sleeper is due
+    ld hl,(v_tick)
+    ld de,(v_mind)
+    add hl,de
+    ld (v_nextwake),hl
+    xor a
+    ld (v_tmp1),a
+    ld a,(v_tmp1)
+    call tcb_ptr
+    push hl
+    pop ix
+sw_run:
+    ld (ix+4),ST_READY          ; a woken sleeper/waiter is a plain ready task from now on
+    ld a,(v_tmp1)
+    ld (v_cur),a
+    ld a,QUANTUM
+    ld (v_quantum),a
+    ld a,(v_tmp1)
+    call tcb_ptr
+    ld de,8
+    add hl,de
+    ld de,SCRATCH
+    ld bc,SCRATCH_LEN
+    ldir                        ; restore new task's scratch
+    ld l,(ix+0)
+    ld h,(ix+1)
+    ld sp,hl
+    pop iy
+    pop ix
+    pop hl
+    pop de
+    pop bc
+    pop af
+    ei
+    ret
+
+task_block:                     ; push a frame and switch (interrupts must be off)
+    push af
+    push bc
+    push de
+    push hl
+    push ix
+    push iy
+    jp sched_switch
+
+task_sleep:                     ; BC = ticks (0 = just yield)
+    push af
+    push hl
+    di
+    ld a,b
+    or c
+    jr nz,task_sleep_t
+    ld a,(v_cur)
+    call tcb_ptr
+    inc hl
+    inc hl
+    inc hl
+    inc hl
+    ld (hl),ST_READY
+    jr task_sleep_go
+task_sleep_t:
+    ld hl,(v_tick)
+    add hl,bc
+    ex de,hl
+    ld a,(v_cur)
+    call tcb_ptr
+    inc hl
+    inc hl
+    ld (hl),e
+    inc hl
+    ld (hl),d
+    inc hl
+    ld (hl),ST_SLEEP
+task_sleep_go:
+    pop hl
+    pop af
+    call task_block
+    ret
+
+task_wait:                      ; HL = event mask -> A = matched low byte (bits consumed)
+    di
+    push bc
+    push de
+task_wait_l:
+    ld de,(v_evflags)
+    ld a,l
+    and e
+    ld c,a
+    ld a,h
+    and d
+    ld b,a
+    or c
+    jr nz,task_wait_got
+    push hl
+    ld a,(v_cur)
+    call tcb_ptr
+    inc hl
+    inc hl
+    inc hl
+    inc hl
+    ld (hl),ST_WAIT
+    inc hl
+    pop de                      ; DE = mask
+    ld (hl),e
+    inc hl
+    ld (hl),d
+    ex de,hl                    ; keep mask in HL for the retry
+    call task_block
+    di
+    jr task_wait_l
+task_wait_got:
+    ld de,(v_evflags)
+    ld a,e
+    xor c
+    ld e,a
+    ld a,d
+    xor b
+    ld d,a
+    ld (v_evflags),de
+    ld a,c
+    pop de
+    pop bc
+    ei
+    ret
+
+event_post:                     ; HL = mask (task context)
+    di
+    call event_post_isr
+    ei
+    ret
+event_post_isr:
+    push de
+    ld de,(v_evflags)
+    ld a,e
+    or l
+    ld e,a
+    ld a,d
+    or h
+    ld d,a
+    ld (v_evflags),de
+    ld a,1
+    ld (v_resched),a
+    pop de
+    ret
+
+frame_wait:                     ; one frame per tick, HALT-based
+    ld bc,1
+    jp task_sleep
+
+; -----------------------------------------------------------------------------
+; Keyboard: direct matrix scan.  One write of $00 + one read answers "any key?".
+; -----------------------------------------------------------------------------
+key_scan:                       ; -> A = key code (0 = none), ON = K_ON
+    xor a
+    out (P_KEYS),a
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    in a,(P_KEYS)
+    inc a
+    jr nz,key_scan_full
+    ld a,$FF
+    out (P_KEYS),a
+    in a,(P_MEMMAP)             ; bit 3 = 0 while ON is held
+    bit 3,a
+    ld a,0
+    ret nz
+    ld a,K_ON
+    ret
+key_scan_full:
+    ld c,0
+    ld d,%11111110
+key_scan_row:
+    ld a,d
+    out (P_KEYS),a
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    in a,(P_KEYS)
+    cpl
+    or a
+    jr nz,key_scan_found
+    rlc d
+    inc c
+    ld a,c
+    cp 7
+    jr nz,key_scan_row
+    ld a,$FF
+    out (P_KEYS),a
+    xor a
+    ret
+key_scan_found:
+    ld e,a
+    ld a,c
+    add a,a
+    add a,a
+    add a,a
+    inc a
+key_scan_bit:
+    srl e
+    jr c,key_scan_hit
+    inc a
+    jr key_scan_bit
+key_scan_hit:
+    push af
+    ld a,$FF
+    out (P_KEYS),a
+    pop af
+    ret
+
+key_poll:                       ; -> A = new key (edge / arrow auto-repeat) or 0
+    call key_scan
+    ld b,a
+    ld a,(v_key)
+    cp b
+    jr z,key_poll_same
+    ld a,b
+    ld (v_key),a
+    or a
+    ret z
+    ld a,24
+    ld (v_keyrep),a
+    xor a
+    ld (v_idle),a
+    ld a,b
+    ret
+key_poll_same:
+    ld a,b
+    or a
+    ret z
+    xor a
+    ld (v_idle),a
+    ld a,b
+    cp K_UP+1
+    jr nc,key_poll_none
+    ld hl,v_keyrep
+    dec (hl)
+    jr nz,key_poll_none
+    ld (hl),4
+    ret
+key_poll_none:
+    xor a
+    ret
+
+wait_key:                       ; blocking; sleeps between polls (HALT via the scheduler)
+    call key_poll
+    or a
+    ret nz
+    ld a,(v_flags)
+    bit F_ONKEY,a
+    jr z,wait_key_nokey
+    res F_ONKEY,a
+    ld (v_flags),a
+    call key_2nd_held           ; 2ND + ON -> sleep now
+    jr nz,wait_key_nokey
+    call power_sleep
+wait_key_nokey:
+    ld a,(v_flags)
+    bit F_WANTSLEEP,a
+    jr z,wait_key_nosleep
+    call power_sleep
+wait_key_nosleep:
+    bit F_RTCTICK,a
+    jr z,wait_key_wait
+    res F_RTCTICK,a
+    ld (v_flags),a
+    ld a,(v_statbar)
+    or a
+    jr z,wait_key_wait
+    call status_draw            ; keep the clock live on screen
+    call lcd_blit
+wait_key_wait:
+    ld bc,3                     ; static: poll every ~28 ms
+    ld a,(v_mode)
+    or a
+    jr z,wait_key_slp
+    ld bc,1
+wait_key_slp:
+    call task_sleep
+    jr wait_key
+
+key_2nd_held:                   ; Z if 2ND is held
+    ld a,%10111111
+    out (P_KEYS),a
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    in a,(P_KEYS)
+    push af
+    ld a,$FF
+    out (P_KEYS),a
+    pop af
+    bit 5,a
+    ret
+
+set_mode:
+    ld (v_mode),a
+    ret
+
+call_pagex:                     ; A = flash page, IX = routine in $4000..$7FFF; HL, DE, BC pass through
+    ex af,af'
+    in a,(P_BANKA)
+    push af
+    ex af,af'
+    out (P_BANKA),a
+    call call_pagex_jp
+    ex af,af'
+    pop af
+    out (P_BANKA),a
+    ex af,af'
+    ret
+call_pagex_jp:
+    jp (ix)
+
+call_page:                      ; A = flash page, HL = routine in $4000..$7FFF
+    ex af,af'
+    in a,(P_BANKA)
+    push af
+    ex af,af'
+    out (P_BANKA),a
+    call call_page_jp
+    ex af,af'
+    pop af
+    out (P_BANKA),a
+    ex af,af'
+    ret
+call_page_jp:
+    jp (hl)
+
+ram_page:                       ; A = RAM page 0..7 mapped at $C000
+    out (P_RAMPAGE),a
+    ret
+
+#include "drivers/lcd.z80"
+#include "drivers/gfx.z80"
+#include "kernel/storage.z80"
+#include "kernel/uilib.z80"
+#include "kernel/edit.z80"
+#include "kernel/viewer.z80"
+#include "kernel/pkg.z80"
+#include "kernel/rtc.z80"
+#include "power/power.z80"
+#include "net/superlink.z80"
+#include "compat/shim.z80"
+#include "drivers/dzx0_standard.asm"
+#include "crc8tab.inc"
+
+.echo "page0 end = "
+.echo $
+.echo "\n"

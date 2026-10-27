@@ -1,0 +1,643 @@
+; =============================================================================
+; MINESWEEPER (native).  16 x 9 field, 18 mines, the first reveal is always safe and opens up.
+;   arrows move the cursor, 2ND / ENTER reveal, ALPHA / DEL flag, MODE / CLEAR pause.   Best = fastest win (score 999 - seconds).
+; =============================================================================
+ms_cx       .equ GV+0
+ms_cy       .equ GV+1
+ms_state    .equ GV+2           ; 0 waiting for the first reveal, 1 playing, 2 won, 3 lost
+ms_time     .equ GV+3           ; 16-bit seconds
+ms_fc       .equ GV+5           ; frames in the current second
+ms_flags    .equ GV+6
+ms_rev      .equ GV+7           ; revealed cells
+ms_rep      .equ GV+8
+ms_dirty    .equ GV+9
+ms_sp       .equ GV+10          ; flood-fill stack pointer
+ms_x        .equ GV+11
+ms_y        .equ GV+12
+ms_i        .equ GV+13
+ms_n        .equ GV+14
+ms_t0       .equ GV+15
+ms_grid     .equ $A900          ; 16 x 9 cells: b0 mine, b1 revealed, b2 flagged, b4-7 neighbouring mines
+ms_stk      .equ $AA00          ; flood-fill stack (cell indices)
+MS_MINES    .equ 18
+
+game_mines:
+    ld a,6
+    ld b,4
+    call gl_init
+ms_restart:
+    ld hl,ms_grid
+    ld de,ms_grid+1
+    ld bc,143
+    ld (hl),0
+    ldir
+    xor a
+    ld (ms_state),a
+    ld (ms_flags),a
+    ld (ms_rev),a
+    ld (ms_fc),a
+    ld (ms_rep),a
+    ld hl,0
+    ld (ms_time),hl
+    ld a,8
+    ld (ms_cx),a
+    ld a,4
+    ld (ms_cy),a
+    ld a,1
+    ld (ms_dirty),a
+ms_loop:
+    call gl_tick
+    ld a,(gl_press)
+    and GK_Q|GK_P
+    jr z,ms_nop
+    call gl_pause
+    jr c,ms_quit
+    ld a,1
+    ld (ms_dirty),a
+ms_nop:
+    call ms_timer
+    call ms_cursor
+    ld a,(gl_press)
+    and GK_A
+    call nz,ms_act_reveal
+    ld a,(gl_press)
+    and GK_B
+    call nz,ms_act_flag
+    ld a,(ms_state)
+    cp 2
+    jr nc,ms_end
+    ld a,(ms_dirty)
+    or a
+    jr z,ms_loop
+    xor a
+    ld (ms_dirty),a
+    call ms_render
+    call gl_flush
+    jr ms_loop
+ms_quit:
+    jp gl_exit
+ms_end:
+    cp 3
+    jr z,ms_lose
+    ld hl,999                   ; won: score = 999 - seconds
+    ld de,(ms_time)
+    or a
+    sbc hl,de
+    jr nc,ms_scored
+    ld hl,0
+ms_scored:
+    call gl_hs_set
+    call ms_render
+    call gl_flush
+    ld hl,ms_t_win
+    jr ms_result
+ms_lose:
+    call ms_showmines
+    call ms_render
+    call gl_flush
+    ld hl,ms_t_lose
+ms_result:
+    call gl_result
+    jr c,ms_quit
+    jp ms_restart
+
+ms_timer:
+    ld a,(ms_state)
+    cp 1
+    ret nz
+    ld a,(ms_fc)
+    inc a
+    ld (ms_fc),a
+    cp 27                       ; 108 Hz / 4 ticks per frame
+    ret c
+    xor a
+    ld (ms_fc),a
+    ld hl,(ms_time)
+    inc hl
+    ld (ms_time),hl
+    ld a,1
+    ld (ms_dirty),a
+    ret
+
+; ---- cursor ----------------------------------------------------------------------------------------------------------------
+ms_cursor:
+    ld a,(gl_held)
+    and GK_L|GK_R|GK_U|GK_D
+    jr nz,msc_h
+    xor a
+    ld (ms_rep),a
+    ret
+msc_h:
+    ld b,a
+    ld a,(gl_press)
+    and GK_L|GK_R|GK_U|GK_D
+    jr nz,msc_first
+    ld a,(ms_rep)
+    dec a
+    ld (ms_rep),a
+    ret nz
+    ld a,2                      ; auto-repeat every 2 frames
+    ld (ms_rep),a
+    jr msc_move
+msc_first:
+    ld a,6
+    ld (ms_rep),a
+msc_move:
+    bit 0,b
+    jr z,msc_r
+    ld a,(ms_cx)
+    or a
+    jr nz,msc_ldec
+    ld a,16                     ; wraps around
+msc_ldec:
+    dec a
+    ld (ms_cx),a
+msc_r:
+    bit 1,b
+    jr z,msc_u
+    ld a,(ms_cx)
+    inc a
+    cp 16
+    jr c,msc_rs
+    xor a
+msc_rs:
+    ld (ms_cx),a
+msc_u:
+    bit 2,b
+    jr z,msc_d
+    ld a,(ms_cy)
+    or a
+    jr nz,msc_udec
+    ld a,9
+msc_udec:
+    dec a
+    ld (ms_cy),a
+msc_d:
+    bit 3,b
+    jr z,msc_done
+    ld a,(ms_cy)
+    inc a
+    cp 9
+    jr c,msc_ds
+    xor a
+msc_ds:
+    ld (ms_cy),a
+msc_done:
+    ld a,1
+    ld (ms_dirty),a
+    ret
+
+; ---- actions ---------------------------------------------------------------------------------------------------------------
+ms_ptr:                         ; B = x, C = y -> HL = &cell
+    ld a,c
+    rlca
+    rlca
+    rlca
+    rlca
+    add a,b
+    ld l,a
+    ld h,0
+    ld de,ms_grid
+    add hl,de
+    ret
+
+ms_act_flag:
+    ld a,(ms_cx)
+    ld b,a
+    ld a,(ms_cy)
+    ld c,a
+    call ms_ptr
+    ld a,(hl)
+    and 2
+    ret nz                      ; revealed
+    ld a,(hl)
+    xor 4
+    ld (hl),a
+    and 4
+    ld a,(ms_flags)
+    jr z,msf_off
+    inc a
+    jr msf_s
+msf_off:
+    dec a
+msf_s:
+    ld (ms_flags),a
+    ld a,1
+    ld (ms_dirty),a
+    ret
+
+ms_act_reveal:
+    ld a,(ms_cx)
+    ld b,a
+    ld a,(ms_cy)
+    ld c,a
+    call ms_ptr
+    ld a,(hl)
+    and 6                       ; revealed or flagged: nothing
+    ret nz
+    ld a,(ms_state)
+    or a
+    jr nz,msr_go
+    call ms_gen                 ; first reveal: place the mines around it
+    ld a,1
+    ld (ms_state),a
+msr_go:
+    ld a,(ms_cx)
+    ld b,a
+    ld a,(ms_cy)
+    ld c,a
+    call ms_flood
+    ld a,1
+    ld (ms_dirty),a
+    ld a,(ms_state)
+    cp 1
+    ret nz
+    ld a,(ms_rev)               ; every safe cell open: won
+    cp 144-MS_MINES
+    ret c
+    ld a,2
+    ld (ms_state),a
+    ret
+
+ms_gen:                         ; mines never on or next to the cursor cell, then the neighbour counts
+    ld a,MS_MINES
+    ld (ms_n),a
+msg_l:
+    ld a,16
+    call gl_rnd_n
+    ld b,a
+    ld a,9
+    call gl_rnd_n
+    ld c,a
+    ld a,(ms_cx)                ; skip |dx| <= 1 and |dy| <= 1
+    sub b
+    add a,1
+    cp 3
+    jr nc,msg_ok
+    ld a,(ms_cy)
+    sub c
+    add a,1
+    cp 3
+    jr c,msg_l
+msg_ok:
+    call ms_ptr
+    ld a,(hl)
+    and 1
+    jr nz,msg_l
+    ld (hl),1
+    ld a,(ms_n)
+    dec a
+    ld (ms_n),a
+    jr nz,msg_l
+    xor a                       ; neighbour counts
+    ld (ms_y),a
+msg_cy:
+    xor a
+    ld (ms_x),a
+msg_cx:
+    ld a,(ms_x)
+    ld b,a
+    ld a,(ms_y)
+    ld c,a
+    call ms_ptr
+    ld a,(hl)
+    and 1
+    jr nz,msg_next
+    push hl
+    call ms_count               ; A = mines around (ms_x, ms_y)
+    pop hl
+    add a,a
+    add a,a
+    add a,a
+    add a,a
+    or (hl)
+    ld (hl),a
+msg_next:
+    ld a,(ms_x)
+    inc a
+    ld (ms_x),a
+    cp 16
+    jr nz,msg_cx
+    ld a,(ms_y)
+    inc a
+    ld (ms_y),a
+    cp 9
+    jr nz,msg_cy
+    ret
+
+ms_count:                       ; mines around (ms_x, ms_y) -> A
+    xor a
+    ld (ms_t0),a
+    ld a,$FF
+    ld (ms_i),a                 ; dy
+msn_y:
+    ld a,$FF
+    ld b,a                      ; dx
+msn_x:
+    ld a,(ms_i)
+    or b
+    jr z,msn_skip               ; dx = dy = 0
+    ld a,(ms_x)
+    add a,b
+    cp 16
+    jr nc,msn_skip
+    ld e,a
+    ld a,(ms_y)
+    ld hl,ms_i
+    add a,(hl)
+    cp 9
+    jr nc,msn_skip
+    rlca
+    rlca
+    rlca
+    rlca
+    add a,e
+    ld l,a
+    ld h,0
+    ld de,ms_grid
+    add hl,de
+    ld a,(hl)
+    and 1
+    jr z,msn_skip
+    ld a,(ms_t0)
+    inc a
+    ld (ms_t0),a
+msn_skip:
+    inc b
+    ld a,b
+    cp 2
+    jr nz,msn_x
+    ld a,(ms_i)
+    inc a
+    ld (ms_i),a
+    cp 2
+    jr nz,msn_y
+    ld a,(ms_t0)
+    ret
+
+ms_flood:                       ; B = x, C = y: reveal the cell and, for a 0, everything connected
+    ld a,c
+    rlca
+    rlca
+    rlca
+    rlca
+    add a,b
+    ld hl,ms_stk
+    ld (hl),a
+    ld a,1
+    ld (ms_sp),a
+msf_pop:
+    ld a,(ms_sp)
+    or a
+    ret z
+    dec a
+    ld (ms_sp),a
+    ld e,a
+    ld d,0
+    ld hl,ms_stk
+    add hl,de
+    ld a,(hl)                   ; cell index
+    ld (ms_i),a
+    ld e,a
+    ld d,0
+    ld hl,ms_grid
+    add hl,de
+    ld a,(hl)
+    and 6
+    jr nz,msf_pop               ; already open or flagged
+    ld a,(hl)
+    or 2
+    ld (hl),a
+    ld a,(ms_rev)
+    inc a
+    ld (ms_rev),a
+    ld a,(hl)
+    and 1
+    jr z,msf_safe
+    ld a,3                      ; a mine: lost
+    ld (ms_state),a
+    ret
+msf_safe:
+    ld a,(hl)
+    and $F0
+    jr nz,msf_pop               ; a number: stop here
+    ld a,(ms_i)                 ; a 0: queue the eight neighbours
+    and 15
+    ld (ms_x),a
+    ld a,(ms_i)
+    rrca
+    rrca
+    rrca
+    rrca
+    and 15
+    ld (ms_y),a
+    ld a,$FF
+    ld (ms_t0),a                ; dy
+msq_y:
+    ld a,$FF
+    ld b,a
+msq_x:
+    ld a,(ms_x)
+    add a,b
+    cp 16
+    jr nc,msq_skip
+    ld e,a
+    ld a,(ms_y)
+    ld hl,ms_t0
+    add a,(hl)
+    cp 9
+    jr nc,msq_skip
+    rlca
+    rlca
+    rlca
+    rlca
+    add a,e                     ; neighbour index
+    ld e,a
+    ld d,0
+    ld hl,ms_grid
+    add hl,de
+    ld a,(hl)
+    and 14                      ; open, flagged or already queued
+    jr nz,msq_skip
+    set 3,(hl)                  ; queued: a cell is never on the stack twice
+    ld a,(ms_sp)                ; push it
+    ld c,a
+    ld a,e
+    ld hl,ms_stk
+    ld e,c
+    ld d,0
+    add hl,de
+    ld (hl),a
+    inc c
+    ld a,c
+    ld (ms_sp),a
+msq_skip:
+    inc b
+    ld a,b
+    cp 2
+    jr nz,msq_x
+    ld a,(ms_t0)
+    inc a
+    ld (ms_t0),a
+    cp 2
+    jr nz,msq_y
+    jp msf_pop
+
+ms_showmines:                   ; after a loss: every mine is shown (flagged ones stay flagged)
+    ld hl,ms_grid
+    ld b,144
+msm_l:
+    ld a,(hl)
+    and 5                       ; mine and not flagged
+    cp 1
+    jr nz,msm_n
+    set 1,(hl)
+msm_n:
+    inc hl
+    djnz msm_l
+    ret
+
+; ---- drawing -------------------------------------------------------------------------------------------------------------
+ms_render:
+    call S_GFX_CLEAR
+    ld hl,ms_l_mi
+    call gl_lang
+    ld b,0
+    ld c,1
+    call gl_text
+    ld a,MS_MINES
+    ld hl,ms_flags
+    sub (hl)
+    jr nc,msr_m
+    xor a
+msr_m:
+    ld l,a
+    ld h,0
+    ld b,6
+    ld c,1
+    call gl_num
+    ld hl,(ms_time)
+    ld b,19
+    ld c,1
+    call gl_num
+    ld b,0
+    ld c,7
+    ld d,96
+    ld e,1
+    ld a,1
+    call gl_rect
+    xor a
+    ld (ms_y),a
+msr_row:
+    xor a
+    ld (ms_x),a
+msr_col:
+    ld a,(ms_x)                 ; pixel position: x * 6, 8 + y * 6
+    ld b,a
+    add a,a
+    add a,b
+    add a,a
+    ld b,a
+    ld a,(ms_y)
+    ld c,a
+    add a,a
+    add a,c
+    add a,a
+    add a,8
+    ld c,a
+    push bc
+    ld a,(ms_x)
+    ld b,a
+    ld a,(ms_y)
+    ld c,a
+    call ms_ptr
+    ld a,(hl)
+    pop bc
+    ld e,a                      ; E = cell
+    bit 1,e
+    jr nz,msr_open
+    ld d,5                      ; hidden: solid 5x5, flagged: ring with a dot
+    ld a,1
+    push de
+    ld d,5
+    ld e,5
+    call gl_rect
+    pop de
+    bit 2,e
+    jr z,msr_cur
+    inc b
+    inc c
+    ld d,3
+    ld e,3
+    xor a
+    call gl_rect
+    inc b
+    inc c
+    ld d,1
+    ld e,1
+    ld a,1
+    call gl_rect
+    dec b
+    dec b
+    dec c
+    dec c
+    jr msr_cur
+msr_open:
+    bit 0,e                     ; a mine: an X
+    jr z,msr_num
+    ld hl,ms_mine_spr
+    ld d,5
+    ld a,1
+    call gl_spr
+    jr msr_cur
+msr_num:
+    ld a,e
+    rrca
+    rrca
+    rrca
+    rrca
+    and 15
+    jr z,msr_cur                ; 0: blank
+    ld e,a
+    add a,a
+    add a,a
+    add a,e
+    ld e,a
+    ld d,0
+    ld hl,gl_dig
+    add hl,de
+    inc b                       ; centre the 3-pixel digit in the 5-pixel cell
+    ld d,5
+    ld a,1
+    call gl_spr
+    dec b
+msr_cur:
+    ld a,(ms_x)                 ; the cursor inverts its cell
+    ld hl,ms_cx
+    cp (hl)
+    jr nz,msr_next
+    ld a,(ms_y)
+    ld hl,ms_cy
+    cp (hl)
+    jr nz,msr_next
+    ld d,5
+    ld e,5
+    ld a,2
+    call gl_rect
+msr_next:
+    ld a,(ms_x)
+    inc a
+    ld (ms_x),a
+    cp 16
+    jp nz,msr_col
+    ld a,(ms_y)
+    inc a
+    ld (ms_y),a
+    cp 9
+    jp nz,msr_row
+    ret
+
+ms_l_mi: .db "MINAS",0,"MINES",0
+ms_t_win: .db "GANASTE!",0,"YOU WIN!",0
+ms_t_lose: .db "BOOM!",0,"BOOM!",0
+ms_mine_spr: .db $88,$50,$20,$50,$88

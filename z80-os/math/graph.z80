@@ -1,0 +1,1431 @@
+; =============================================================================
+; graph.z80 -- 2D function grapher (Y1..Y3), window editor, zoom menu, trace and X / Y / Y' table.
+; The plot area is the full width (96 px) and rows 8..63 (56 px).  The finished plot is kept in GBUF2 so the
+; trace cursor / readout can be redrawn without evaluating the curves again.
+; NOTE: ev_eval (and every fx_ function) may clobber fx_c..fx_e, fx_t..fx_v: values that must survive an
+; evaluation live in the gr_ variables below.
+; =============================================================================
+GR_BASE  .equ (ED_BASE+420)
+gr_y1    .equ GR_BASE           ; 3 x 48 bytes
+gr_xmin  .equ (GR_BASE+144)
+gr_xmax  .equ (GR_BASE+150)
+gr_ymin  .equ (GR_BASE+156)
+gr_ymax  .equ (GR_BASE+162)
+gr_dx    .equ (GR_BASE+168)
+gr_sy    .equ (GR_BASE+174)
+gr_tx    .equ (GR_BASE+180)
+gr_ts    .equ (GR_BASE+186)     ; table start
+gr_tp    .equ (GR_BASE+192)     ; table step
+gr_ty    .equ (GR_BASE+198)
+gr_px    .equ (GR_BASE+204)
+gr_fn    .equ (GR_BASE+205)
+gr_prev  .equ (GR_BASE+206)     ; 2
+gr_pv    .equ (GR_BASE+208)
+gr_cur   .equ (GR_BASE+209)     ; 2
+gr_2nd   .equ (GR_BASE+211)
+gr_sel   .equ (GR_BASE+212)
+gr_row   .equ (GR_BASE+213)     ; 2
+gr_off   .equ (GR_BASE+215)     ; 2 (table scroll)
+gr_tmpb  .equ (GR_BASE+217)     ; 34 bytes text
+gr_edbuf .equ (GR_BASE+251)     ; 48 bytes: prompt buffer
+gr_title .equ (GR_BASE+300)     ; 2
+gr_wptr  .equ (GR_BASE+302)     ; 2
+gr_trow  .equ (GR_BASE+304)
+gr_zf    .equ (GR_BASE+305)     ; 2
+gr_zmin  .equ (GR_BASE+307)     ; 2
+gr_zmax  .equ (GR_BASE+309)     ; 2
+gr_xs    .equ (GR_BASE+311)     ; 6
+gr_h     .equ (GR_BASE+317)     ; 6
+gr_fp    .equ (GR_BASE+323)     ; 6
+GR_END   .equ (GR_BASE+330)
+
+gr_defaults:
+    ld hl,gr_y1
+    ld de,gr_y1+1
+    ld bc,143
+    ld (hl),0
+    ldir
+    ld hl,gr_y1
+    ld (hl),T_SIN
+    inc hl
+    ld (hl),'X'
+    inc hl
+    ld (hl),')'
+    ld hl,0
+    ld (gr_off),hl
+    ld hl,fxk_zero_t
+    ld de,gr_ts
+    ld bc,6
+    ldir
+    ld hl,fxk_one
+    ld de,gr_tp
+    ld bc,6
+    ldir
+gr_std:                         ; standard window
+    ld hl,fxk_neg10
+    ld de,gr_xmin
+    ld bc,6
+    ldir
+    ld hl,fxk_ten
+    ld de,gr_xmax
+    ld bc,6
+    ldir
+    ld hl,fxk_neg6
+    ld de,gr_ymin
+    ld bc,6
+    ldir
+    ld hl,fxk_six
+    ld de,gr_ymax
+    ld bc,6
+    ldir
+    ret
+fxk_zero_t:
+    .db 0,0,0,0,0,0
+
+; ---- pixel helpers -----------------------------------------------------------------------------------------------
+gr_pix:                         ; B = x (0..95), C = y (0..63): set
+    ld a,b
+    cp 96
+    ret nc
+    ld a,c
+    cp 64
+    ret nc
+    call gr_pixaddr
+    or (hl)
+    ld (hl),a
+    ret
+gr_xorpix:
+    ld a,b
+    cp 96
+    ret nc
+    ld a,c
+    cp 64
+    ret nc
+    call gr_pixaddr
+    xor (hl)
+    ld (hl),a
+    ret
+gr_pixaddr:                     ; -> HL = address, A = bit mask (B, C preserved)
+    ld l,c
+    ld h,0
+    ld d,h
+    ld e,l
+    add hl,hl
+    add hl,de
+    add hl,hl
+    add hl,hl                   ; y * 12
+    ld a,b
+    srl a
+    srl a
+    srl a
+    ld e,a
+    ld d,0
+    add hl,de
+    ld de,GBUF1
+    add hl,de
+    ld a,b
+    and 7
+    ld e,a
+    ld a,$80
+    ret z
+gpa1:
+    srl a
+    dec e
+    jr nz,gpa1
+    ret
+
+; vertical run of pixels in column B between rows DE and HL (signed 16-bit, any order), clipped to 8..63
+gr_span:
+    push hl
+    or a
+    sbc hl,de
+    pop hl
+    jp p,gs1
+    ex de,hl
+gs1:                            ; DE = low, HL = high
+    bit 7,h
+    ret nz                      ; high < 0
+    ld a,h
+    or a
+    jr z,gs2
+    ld hl,63
+gs2:
+    ld a,l
+    cp 8
+    ret c                       ; high < 8
+    cp 64
+    jr c,gs3
+    ld l,63
+gs3:
+    ld c,l                      ; C = last row
+    bit 7,d
+    jr nz,gs4
+    ld a,d
+    or a
+    ret nz                      ; low > 255: nothing visible
+    ld a,e
+    cp 8
+    jr nc,gs6
+gs4:
+    ld a,8
+gs6:
+    cp 64
+    ret nc
+    ld e,a                      ; E = first row
+    ld d,c                      ; D = last row
+gs7:
+    ld c,e
+    push de
+    call gr_pix
+    pop de
+    ld a,e
+    inc e
+    cp d
+    jr c,gs7
+    ret
+
+; HL = row (signed) for the column in (gr_px): connect with the previous sample when it is near
+gr_pt:
+    ex de,hl
+    ld (gr_row),de
+    ld a,(gr_pv)
+    or a
+    jr z,gpt_single
+    ld hl,(gr_prev)
+    or a
+    sbc hl,de
+    bit 7,h
+    jr z,gpt1
+    ld a,l
+    cpl
+    ld l,a
+    ld a,h
+    cpl
+    ld h,a
+    inc hl
+gpt1:
+    ld bc,91
+    or a
+    sbc hl,bc
+    jr nc,gpt_single            ; jump too large: break the curve
+    ld hl,(gr_prev)
+    add hl,de
+    sra h
+    rr l                        ; mid row
+    push de
+    push hl
+    ld a,(gr_px)
+    dec a
+    ld b,a
+    ld de,(gr_prev)
+    call gr_span
+    pop hl
+    pop de
+    ld a,(gr_px)
+    ld b,a
+    call gr_span
+    jr gpt_end
+gpt_single:
+    ld a,(gr_px)
+    ld b,a
+    ld h,d
+    ld l,e
+    call gr_span
+gpt_end:
+    ld hl,(gr_row)
+    ld (gr_prev),hl
+    ld a,1
+    ld (gr_pv),a
+    ret
+
+; ---- plotting -----------------------------------------------------------------------------------------------
+gr_prepare:
+    ld hl,gr_xmax
+    call fx_lda
+    ld hl,gr_xmin
+    call fx_ldb
+    call fx_sub
+    ld a,(fx_a)
+    or a
+    jr z,gp_bad
+    ld a,(fx_a+1)
+    or a
+    jr nz,gp_bad
+    ld hl,fxk_f95
+    call fx_ldb
+    call fx_div
+    ld de,gr_dx
+    call fx_sta
+    ld hl,gr_ymax
+    call fx_lda
+    ld hl,gr_ymin
+    call fx_ldb
+    call fx_sub
+    ld a,(fx_a)
+    or a
+    jr z,gp_bad
+    ld a,(fx_a+1)
+    or a
+    jr nz,gp_bad
+    call fx_ab
+    ld hl,fxk_f55
+    call fx_lda
+    call fx_div
+    ld de,gr_sy
+    call fx_sta
+    ret
+gp_bad:
+    call gr_std
+    jr gr_prepare
+
+gr_axes:
+    ld hl,gr_ymax
+    call fx_lda
+    ld hl,gr_sy
+    call fx_ldb
+    call fx_mul
+    ld hl,fxk_half
+    call fx_ldb
+    call fx_add
+    call fx_floor
+    call fx_to_i16
+    jr c,ax2
+    bit 7,h
+    jr nz,ax2
+    ld a,h
+    or a
+    jr nz,ax2
+    ld a,l
+    cp 56
+    jr nc,ax2
+    add a,8
+    ld c,a
+    ld a,$AA
+    call S_GFX_HLINE
+ax2:
+    ld hl,gr_xmin
+    call fx_lda
+    call fx_neg
+    ld hl,gr_dx
+    call fx_ldb
+    call fx_div
+    ld hl,fxk_half
+    call fx_ldb
+    call fx_add
+    call fx_floor
+    call fx_to_i16
+    ret c
+    bit 7,h
+    ret nz
+    ld a,h
+    or a
+    ret nz
+    ld a,l
+    cp 96
+    ret nc
+    ld (gr_trow),a
+    ld c,8
+ax3:
+    ld a,(gr_trow)
+    ld b,a
+    push bc
+    call gr_pix
+    pop bc
+    inc c
+    inc c
+    ld a,c
+    cp 64
+    jr c,ax3
+    ret
+
+; FA = x -> FA = Y(x) with the function in (gr_cur); carry = error.  Leaves x in gr_tx.
+gr_eval:
+    ld de,gr_tx
+    call fx_sta
+    ld a,23
+    call fx_stvar
+    ld hl,(gr_cur)
+    jp ev_eval
+
+gr_setcur:                      ; A = function 0..2 -> gr_cur
+    ld l,a
+    ld h,0
+    ld d,h
+    ld e,l
+    add hl,hl
+    add hl,de
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,hl                   ; * 48
+    ld de,gr_y1
+    add hl,de
+    ld (gr_cur),hl
+    ret
+
+gr_curve:                       ; plot function (gr_fn)
+    ld a,(gr_fn)
+    call gr_setcur
+    ld hl,(gr_cur)
+    ld a,(hl)
+    or a
+    ret z
+    ld hl,gr_xmin
+    ld de,gr_tx
+    ld bc,6
+    ldir
+    xor a
+    ld (gr_px),a
+    ld (gr_pv),a
+cu1:
+    ld hl,gr_tx
+    call fx_lda
+    call gr_eval
+    jr c,cu_bad
+    call fx_ab
+    ld hl,gr_ymax
+    call fx_lda
+    call fx_sub
+    ld hl,gr_sy
+    call fx_ldb
+    call fx_mul
+    ld hl,fxk_half
+    call fx_ldb
+    call fx_add
+    call fx_floor
+    call fx_to_i16
+    jr c,cu_bad
+    ld de,8
+    add hl,de
+    call gr_pt
+    jr cu_next
+cu_bad:
+    xor a
+    ld (gr_pv),a
+cu_next:
+    ld hl,gr_tx
+    call fx_lda
+    ld hl,gr_dx
+    call fx_ldb
+    call fx_add
+    ld de,gr_tx
+    call fx_sta
+    ld hl,gr_px
+    inc (hl)
+    ld a,(hl)
+    cp 96
+    jr c,cu1
+    ret
+
+gr_draw:
+    call S_GFX_CLEAR
+    call S_STATUS_DRAW
+    ld hl,MS_PLOTTING
+    call m_tr
+    ld b,6
+    ld c,28
+    call S_PUTS
+    call S_LCD_BLIT
+    call S_GFX_CLEAR
+    call S_STATUS_DRAW
+    call gr_prepare
+    call gr_axes
+    xor a
+    ld (gr_fn),a
+dr1:
+    call gr_curve
+    ld hl,gr_fn
+    inc (hl)
+    ld a,(hl)
+    cp 3
+    jr c,dr1
+    ld hl,GBUF1
+    ld de,GBUF2
+    ld bc,768
+    ldir
+    jp S_LCD_BLIT
+
+gr_restore:
+    ld hl,GBUF2
+    ld de,GBUF1
+    ld bc,768
+    ldir
+    ret
+
+; ---- entry / main loop -------------------------------------------------------------------------------------------
+graph_entry:
+    cp KC_YEQ
+    jr z,ge_y
+    cp KC_WINDOW
+    jr z,ge_w
+    cp KC_ZOOM
+    jr z,ge_z
+    jr ge_plot
+ge_y:
+    call gr_yeditor
+    jr ge_plot
+ge_w:
+    call gr_window
+    jr ge_plot
+ge_z:
+    call gr_zoom
+ge_plot:
+    call gr_draw
+    xor a
+    ld (gr_2nd),a
+gl_loop:
+    call S_WAIT_KEY
+    ld b,a
+    ld a,(gr_2nd)
+    or a
+    jr z,gl_n
+    xor a
+    ld (gr_2nd),a
+    ld a,b
+    cp K_MODE
+    ret z
+    cp K_GRAPH
+    jr z,gl_table
+    jr gl_loop
+gl_n:
+    ld a,b
+    cp K_2ND
+    jr z,gl_set2
+    cp K_CLEAR
+    ret z
+    cp K_YEQ
+    jr z,gl_y
+    cp K_WINDOW
+    jr z,gl_w
+    cp K_ZOOM
+    jr z,gl_z
+    cp K_GRAPH
+    jr z,gl_re
+    cp K_TRACE
+    jr z,gl_trace
+    cp K_LEFT
+    jr z,gl_trace
+    cp K_RIGHT
+    jr z,gl_trace
+    cp K_UP
+    jr z,gl_trace
+    cp K_DOWN
+    jr z,gl_trace
+    jr gl_loop
+gl_set2:
+    ld a,1
+    ld (gr_2nd),a
+    jr gl_loop
+gl_y:
+    call gr_yeditor
+    jr gl_re
+gl_w:
+    call gr_window
+    jr gl_re
+gl_z:
+    call gr_zoom
+gl_re:
+    call gr_draw
+    jr gl_loop
+gl_trace:
+    ld a,b
+    cp K_TRACE
+    jr nz,gl_t2
+    xor a
+gl_t2:
+    ld (gr_sel),a               ; an arrow key press moves the cursor right away
+    call gr_trace
+    call gr_restore
+    call S_LCD_BLIT
+    jr gl_loop
+gl_table:
+    call gr_table
+    call gr_restore
+    call S_LCD_BLIT
+    jr gl_loop
+
+; ---- trace -------------------------------------------------------------------------------------------------------
+gr_pickfn:                      ; make (gr_fn) point at a non-empty function (carry = none)
+    ld b,3
+pf1:
+    ld a,(gr_fn)
+    call gr_setcur
+    ld hl,(gr_cur)
+    ld a,(hl)
+    or a
+    ret nz
+    ld a,(gr_fn)
+    inc a
+    cp 3
+    jr c,pf2
+    xor a
+pf2:
+    ld (gr_fn),a
+    djnz pf1
+    scf
+    ret
+
+gr_trace:
+    ld a,48
+    ld (gr_px),a
+    xor a
+    ld (gr_fn),a
+    call gr_pickfn
+    ret c
+    ld a,(gr_sel)
+    ld b,a
+    jr tr_key
+tr_loop:
+    call tr_draw
+    call S_WAIT_KEY
+    ld b,a
+tr_key:
+    ld a,b
+    cp K_LEFT
+    jr z,tr_l
+    cp K_RIGHT
+    jr z,tr_r
+    cp K_UP
+    jr z,tr_u
+    cp K_DOWN
+    jr z,tr_d
+    cp K_CLEAR
+    ret z
+    cp K_GRAPH
+    ret z
+    cp K_TRACE
+    ret z
+    jr tr_loop
+tr_l:
+    ld a,(gr_px)
+    or a
+    jr z,tr_loop
+    dec a
+    ld (gr_px),a
+    jr tr_loop
+tr_r:
+    ld a,(gr_px)
+    cp 95
+    jr nc,tr_loop
+    inc a
+    ld (gr_px),a
+    jr tr_loop
+tr_u:
+    ld a,(gr_fn)
+    inc a
+    cp 3
+    jr c,tr_u2
+    xor a
+tr_u2:
+    ld (gr_fn),a
+    call gr_pickfn
+    jr tr_loop
+tr_d:
+    ld a,(gr_fn)
+    or a
+    jr nz,tr_d2
+    ld a,3
+tr_d2:
+    dec a
+    ld (gr_fn),a
+    call gr_pickfn
+    jr tr_loop
+
+tr_draw:
+    call gr_restore
+    ld a,(gr_px)
+    ld l,a
+    ld h,0
+    call fx_from_i16
+    ld hl,gr_dx
+    call fx_ldb
+    call fx_mul
+    ld hl,gr_xmin
+    call fx_ldb
+    call fx_add
+    ld de,gr_xs
+    call fx_sta
+    ld hl,gr_tmpb               ; "Yn X=<x>"
+    ld (hl),'Y'
+    inc hl
+    ld a,(gr_fn)
+    add a,'1'
+    ld (hl),a
+    inc hl
+    ld (hl),' '
+    inc hl
+    ld (hl),'X'
+    inc hl
+    ld (hl),'='
+    inc hl
+    ex de,hl
+    call gr_numcat              ; FA still holds x
+    ld (gr_row),de              ; text end
+    ld a,(gr_fn)
+    call gr_setcur
+    ld hl,gr_xs
+    call fx_lda
+    call gr_eval
+    jr c,trd_err
+    ld de,gr_ty
+    call fx_sta
+    ld hl,gr_ty
+    call fx_lda                 ; (clobbers DE)
+    ld de,(gr_row)
+    ld a,' '
+    ld (de),a
+    inc de
+    ld a,'Y'
+    ld (de),a
+    inc de
+    ld a,'='
+    ld (de),a
+    inc de
+    call gr_numcat
+    ld (gr_row),de
+    ld hl,gr_ty                 ; cross marker at the curve
+    call fx_lda
+    call fx_ab
+    ld hl,gr_ymax
+    call fx_lda
+    call fx_sub
+    ld hl,gr_sy
+    call fx_ldb
+    call fx_mul
+    ld hl,fxk_half
+    call fx_ldb
+    call fx_add
+    call fx_floor
+    call fx_to_i16
+    jr c,trd_text
+    ld de,8
+    add hl,de
+    ld a,h
+    or a
+    jr nz,trd_text
+    ld a,l
+    cp 64
+    jr nc,trd_text
+    ld c,a
+    ld a,(gr_px)
+    ld b,a
+    call tr_cross
+    jr trd_text
+trd_err:
+    ld de,(gr_row)
+    ld hl,tr_errtxt
+    call gr_catstr
+    ld (gr_row),de
+trd_text:
+    ld de,(gr_row)
+    xor a
+    ld (de),a
+    ld b,0
+    ld c,58
+    ld d,12
+    ld e,6
+    ld a,$FF
+    call S_GFX_FILL
+    ld a,$F0
+    ld (v_invert),a
+    ld hl,gr_tmpb
+    ld b,0
+    ld c,58
+    call S_PUTS
+    xor a
+    ld (v_invert),a
+    jp S_LCD_BLIT
+tr_errtxt: .db " Y=ERR",0
+
+tr_cross:                       ; B = x, C = y: plus sign, XOR
+    push bc
+    call gr_xorpix
+    pop bc
+    push bc
+    inc b
+    call gr_xorpix
+    pop bc
+    push bc
+    dec b
+    call gr_xorpix
+    pop bc
+    push bc
+    inc c
+    call gr_xorpix
+    pop bc
+    dec c
+    jp gr_xorpix
+
+gr_catstr:                      ; HL -> text appended at DE
+    ld a,(hl)
+    or a
+    ret z
+    ld (de),a
+    inc hl
+    inc de
+    jr gr_catstr
+
+gr_numcat:                      ; FA as text (5 digits) appended at DE
+    push de
+    ld a,5
+    ld (fx_ndig),a
+    call fx_tostr
+    ld a,9
+    ld (fx_ndig),a
+    pop de
+    ld hl,fx_str
+    jr gr_catstr
+
+; ---- prompt: edit a number / expression ------------------------------------------------------------------------------
+; HL = title (translated), FA = initial value (text-ified) -> FA result, carry = cancelled
+gr_prompt:
+    ld (gr_title),hl
+    call fx_tostr
+    ld hl,fx_str
+    ld de,gr_edbuf
+gpr1:
+    ld a,(hl)
+    cp 'E'
+    jr nz,gpr2
+    ld a,T_EE
+gpr2:
+    ld (de),a
+    inc hl
+    inc de
+    or a
+    jr nz,gpr1
+    ld hl,gr_edbuf
+    ld a,40
+    call ed_start
+gpr_loop:
+    ld hl,(gr_title)
+    call S_UI_BEGIN
+    xor a
+    ld (rn_col),a
+    ld a,24
+    ld (rn_w),a
+    ld hl,(ed_buf)
+    ld a,(ed_cur)
+    ld b,a
+    ld c,26
+    call ed_render
+    call S_LCD_BLIT
+    call S_WAIT_KEY
+    call ed_key
+    or a
+    jr z,gpr_loop
+    cp KC_ENTER
+    jr z,gpr_ok
+    cp KC_CLEAR
+    jr z,gpr_cancel
+    cp KC_QUIT
+    jr z,gpr_cancel
+    jr gpr_loop
+gpr_ok:
+    ld hl,gr_edbuf
+    call ev_eval
+    jr c,gpr_loop
+    or a
+    ret
+gpr_cancel:
+    scf
+    ret
+
+; ---- Y= editor ----------------------------------------------------------------------------------------------------------
+gr_yeditor:
+    xor a
+    ld (gr_sel),a
+ye_sel:
+    ld a,(gr_sel)
+    call gr_setcur
+    ld hl,(gr_cur)
+    ld a,47
+    call ed_start
+ye_loop:
+    ld hl,MS_Y_TITLE
+    call m_tr
+    call S_UI_BEGIN
+    xor a
+    ld (gr_fn),a
+ye_rows:
+    ld a,(gr_fn)
+    ld c,a
+    add a,a
+    add a,c
+    add a,a
+    add a,a                     ; * 12: two text rows per function
+    add a,14
+    ld (gr_trow),a
+    ld hl,gr_tmpb
+    ld (hl),'Y'
+    inc hl
+    ld a,(gr_fn)
+    add a,'1'
+    ld (hl),a
+    inc hl
+    ld (hl),'='
+    inc hl
+    ld (hl),0
+    ld hl,gr_tmpb
+    ld a,(gr_trow)
+    ld c,a
+    ld b,0
+    call S_PUTS
+    ld a,3
+    ld (rn_col),a
+    ld a,21
+    ld (rn_w),a
+    ld a,(gr_fn)
+    ld b,a
+    ld a,(gr_sel)
+    cp b
+    jr nz,ye_other
+    ld hl,(ed_buf)
+    ld a,(ed_cur)
+    ld b,a
+    jr ye_draw
+ye_other:
+    ld a,b
+    call gr_setcur
+    ld hl,(gr_cur)
+    ld b,255
+ye_draw:
+    ld a,(gr_trow)
+    ld c,a
+    call ed_render
+    ld hl,gr_fn
+    inc (hl)
+    ld a,(hl)
+    cp 3
+    jr c,ye_rows
+    ld a,(ed_mod)
+    or a
+    jr z,ye_hint
+    ld hl,cd_2nd
+    bit 0,a
+    jr nz,ye_ind
+    ld hl,cd_alpha
+ye_ind:
+    ld b,0
+    ld c,56
+    call S_PUTS
+ye_hint:
+    call S_LCD_BLIT
+    call S_WAIT_KEY
+    call ed_key
+    or a
+    jp z,ye_loop
+    cp KC_ENTER
+    jr z,ye_down
+    cp KC_DOWN
+    jr z,ye_down
+    cp KC_UP
+    jr z,ye_up
+    cp KC_CLEAR
+    ret z
+    cp KC_QUIT
+    ret z
+    cp KC_GRAPH
+    ret z
+    jp ye_loop
+ye_down:
+    ld a,(gr_sel)
+    inc a
+    cp 3
+    jr c,ye_set
+    xor a
+    jr ye_set
+ye_up:
+    ld a,(gr_sel)
+    or a
+    jr nz,ye_up2
+    ld a,3
+ye_up2:
+    dec a
+ye_set:
+    ld (gr_sel),a
+    jp ye_sel
+
+; ---- window editor ------------------------------------------------------------------------------------------------------------
+gr_window:
+    xor a
+    ld (gr_sel),a
+wn1:
+    ld a,(gr_sel)
+    add a,a
+    ld c,a
+    ld b,0
+    ld hl,wn_ids
+    add hl,bc
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ex de,hl
+    call m_tr
+    ld (gr_title),hl
+    ld a,(gr_sel)
+    add a,a
+    ld c,a
+    ld b,0
+    ld hl,wn_ptab
+    add hl,bc
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ld (gr_wptr),de
+    ex de,hl
+    call fx_lda
+    ld hl,(gr_title)
+    call gr_prompt
+    ret c
+    ld de,(gr_wptr)
+    call fx_sta
+    ld a,(gr_sel)
+    inc a
+    ld (gr_sel),a
+    cp 4
+    jr c,wn1
+    ret
+wn_ptab:
+    .dw gr_xmin,gr_xmax,gr_ymin,gr_ymax
+wn_ids:
+    .dw MS_W_XMIN,MS_W_XMAX,MS_W_YMIN,MS_W_YMAX
+
+; ---- zoom menu ------------------------------------------------------------------------------------------------------------------
+gr_zoom:
+    ld hl,MS_ZOOM_TITLE
+    call m_tr
+    call S_UI_BEGIN
+    xor a
+    ld (gr_fn),a
+zm1:
+    ld a,(gr_fn)
+    add a,a
+    ld c,a
+    ld b,0
+    ld hl,zm_ids
+    add hl,bc
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ex de,hl
+    call m_tr
+    ld a,(gr_fn)
+    call S_UI_LINE_Y
+    ld b,1
+    call S_PUTS
+    ld hl,gr_fn
+    inc (hl)
+    ld a,(hl)
+    cp 6
+    jr c,zm1
+    call S_LCD_BLIT
+zm_key:
+    call S_WAIT_KEY
+    cp K_CLEAR
+    ret z
+    cp K_1
+    jr z,zm_std
+    cp K_2
+    jr z,zm_trig
+    cp K_3
+    jr z,zm_in
+    cp K_4
+    jr z,zm_out
+    cp K_5
+    jp z,zm_sq
+    cp K_6
+    jp z,zm_fit
+    jr zm_key
+zm_ids:
+    .dw MS_Z_STD,MS_Z_TRIG,MS_Z_IN,MS_Z_OUT,MS_Z_SQ,MS_Z_FIT
+zm_std:
+    jp gr_std
+zm_trig:
+    ld hl,fxk_neg2pi
+    ld de,gr_xmin
+    ld bc,6
+    ldir
+    ld hl,fxk_twopi
+    ld de,gr_xmax
+    ld bc,6
+    ldir
+    ld hl,fxk_neg4
+    ld de,gr_ymin
+    ld bc,6
+    ldir
+    ld hl,fxk_four
+    ld de,gr_ymax
+    ld bc,6
+    ldir
+    ret
+zm_in:
+    ld hl,fxk_half
+    jr zm_scale
+zm_out:
+    ld hl,fxk_two
+zm_scale:                       ; scale both ranges about their centres by the factor at HL
+    ld (gr_zf),hl
+    ld hl,gr_xmin
+    ld de,gr_xmax
+    call zm_one
+    ld hl,gr_ymin
+    ld de,gr_ymax
+zm_one:                         ; HL = &min, DE = &max
+    ld (gr_zmin),hl
+    ld (gr_zmax),de
+    call fx_lda
+    ld hl,(gr_zmax)
+    call fx_ldb
+    call fx_add
+    call fx_halve
+    ld de,fx_c
+    call fx_sta                 ; centre
+    ld hl,(gr_zmax)
+    call fx_lda
+    ld hl,(gr_zmin)
+    call fx_ldb
+    call fx_sub
+    call fx_halve
+    ld hl,(gr_zf)
+    call fx_ldb
+    call fx_mul
+    ld de,fx_d
+    call fx_sta                 ; scaled half range
+    ld hl,fx_c
+    call fx_lda
+    ld hl,fx_d
+    call fx_ldb
+    call fx_sub
+    ld de,(gr_zmin)
+    call fx_sta
+    ld hl,fx_c
+    call fx_lda
+    ld hl,fx_d
+    call fx_ldb
+    call fx_add
+    ld de,(gr_zmax)
+    jp fx_sta
+zm_sq:                          ; ymax - ymin = (xmax - xmin) * 55 / 95 about the y centre
+    ld hl,gr_xmax
+    call fx_lda
+    ld hl,gr_xmin
+    call fx_ldb
+    call fx_sub
+    ld hl,fxk_f55
+    call fx_ldb
+    call fx_mul
+    ld hl,fxk_f95
+    call fx_ldb
+    call fx_div
+    call fx_halve
+    ld de,fx_d
+    call fx_sta                 ; half height
+    ld hl,gr_ymin
+    call fx_lda
+    ld hl,gr_ymax
+    call fx_ldb
+    call fx_add
+    call fx_halve
+    ld de,fx_c
+    call fx_sta                 ; centre
+    ld hl,fx_d
+    call fx_ldb
+    call fx_sub
+    ld de,gr_ymin
+    call fx_sta
+    ld hl,fx_c
+    call fx_lda
+    ld hl,fx_d
+    call fx_ldb
+    call fx_add
+    ld de,gr_ymax
+    jp fx_sta
+zm_fit:                         ; y range from the first function over the visible x range
+    xor a
+    call gr_setcur
+    ld hl,(gr_cur)
+    ld a,(hl)
+    or a
+    ret z
+    ld a,255
+    ld (gr_pv),a                ; 255 = no sample yet
+    call gr_prepare
+    ld hl,gr_xmin
+    ld de,gr_tx
+    ld bc,6
+    ldir
+    xor a
+    ld (gr_px),a
+zf1:
+    ld hl,gr_tx
+    call fx_lda
+    call gr_eval
+    jr c,zf_next
+    ld a,(gr_pv)
+    cp 255
+    jr nz,zf2
+    ld de,gr_ymin
+    call fx_sta
+    ld de,gr_ymax
+    call fx_sta
+    xor a
+    ld (gr_pv),a
+    jr zf_next
+zf2:
+    ld de,gr_ty
+    call fx_sta
+    ld hl,gr_ymin
+    call fx_ldb
+    call fx_cmp
+    jr nc,zf3
+    ld hl,gr_ty
+    ld de,gr_ymin
+    ld bc,6
+    ldir
+zf3:
+    ld hl,gr_ty
+    call fx_lda
+    ld hl,gr_ymax
+    call fx_ldb
+    call fx_cmp
+    jr z,zf_next
+    jr c,zf_next
+    ld hl,gr_ty
+    ld de,gr_ymax
+    ld bc,6
+    ldir
+zf_next:
+    ld hl,gr_tx
+    call fx_lda
+    ld hl,gr_dx
+    call fx_ldb
+    call fx_add
+    ld de,gr_tx
+    call fx_sta
+    ld hl,gr_px
+    inc (hl)
+    ld a,(hl)
+    cp 96
+    jr c,zf1
+    ld a,(gr_pv)
+    cp 255
+    ret z
+    ; margin 5 %: ymin -= span/20, ymax += span/20 ; flat functions get +-1
+    ld hl,gr_ymax
+    call fx_lda
+    ld hl,gr_ymin
+    call fx_ldb
+    call fx_sub
+    ld hl,fxk_f20
+    call fx_ldb
+    call fx_mul
+    ld a,(fx_a)
+    or a
+    jr nz,zf4
+    call fx_one
+zf4:
+    ld de,gr_ty
+    call fx_sta
+    ld hl,gr_ymin
+    call fx_lda
+    ld hl,gr_ty
+    call fx_ldb
+    call fx_sub
+    ld de,gr_ymin
+    call fx_sta
+    ld hl,gr_ymax
+    call fx_lda
+    ld hl,gr_ty
+    call fx_ldb
+    call fx_add
+    ld de,gr_ymax
+    jp fx_sta
+
+; ---- table: X, Y1, Y1' ---------------------------------------------------------------------------------------------------------------
+gr_table:
+    xor a
+    ld (gr_fn),a
+    call gr_pickfn
+    ret c
+    ld hl,0
+    ld (gr_off),hl
+tb_loop:
+    ld hl,MS_TBL_TITLE
+    call m_tr
+    call S_UI_BEGIN
+    ld a,4
+    ld (fx_ndig),a
+    xor a
+    ld (gr_sel),a               ; row counter
+tb1:
+    ld a,(gr_sel)
+    ld l,a
+    ld h,0
+    ld de,(gr_off)
+    add hl,de
+    call fx_from_i16            ; FA = row index
+    ld hl,gr_tp
+    call fx_ldb
+    call fx_mul
+    ld hl,gr_ts
+    call fx_ldb
+    call fx_add                 ; x
+    ld de,gr_xs
+    call fx_sta
+    ld a,(gr_sel)
+    call S_UI_LINE_Y
+    ld a,c
+    ld (gr_trow),a
+    ld hl,gr_xs
+    call fx_lda
+    call fx_tostr
+    ld a,(gr_trow)
+    ld c,a
+    ld b,0
+    ld hl,fx_str
+    call tb_put
+    ld hl,gr_xs
+    call fx_lda
+    call gr_eval
+    jp c,tb_err
+    call fx_tostr
+    ld a,(gr_trow)
+    ld c,a
+    ld b,8
+    ld hl,fx_str
+    call tb_put
+    ; derivative: (f(x+h) - f(x-h)) / 2h with h = 0.001 * max(1, |x|)
+    ld hl,gr_xs
+    call fx_lda
+    call fx_abs
+    ld hl,fxk_one
+    call fx_ldb
+    call fx_cmp
+    jr nc,tb2
+    call fx_one
+tb2:
+    ld hl,fxk_h3
+    call fx_ldb
+    call fx_mul
+    ld de,gr_h
+    call fx_sta
+    ld hl,gr_xs
+    call fx_lda
+    ld hl,gr_h
+    call fx_ldb
+    call fx_add
+    call gr_eval
+    jr c,tb_err
+    ld de,gr_fp
+    call fx_sta                 ; f(x+h)
+    ld hl,gr_xs
+    call fx_lda
+    ld hl,gr_h
+    call fx_ldb
+    call fx_sub
+    call gr_eval
+    jr c,tb_err
+    call fx_ab
+    ld hl,gr_fp
+    call fx_lda
+    call fx_sub
+    ld hl,gr_h
+    call fx_ldb
+    call fx_div
+    call fx_halve
+    call fx_tostr
+    ld a,(gr_trow)
+    ld c,a
+    ld b,16
+    ld hl,fx_str
+    call tb_put
+    jr tb_next
+tb_err:
+    ld a,(gr_trow)
+    ld c,a
+    ld b,8
+    ld hl,tr_errtxt+1
+    call tb_put
+tb_next:
+    ld hl,gr_sel
+    inc (hl)
+    ld a,(hl)
+    cp 7
+    jp c,tb1
+    ld a,9
+    ld (fx_ndig),a
+    ld hl,MS_TBL_HINT
+    call m_tr
+    ld b,0
+    ld c,56
+    call S_PUTS
+    call S_LCD_BLIT
+    call S_WAIT_KEY
+    cp K_CLEAR
+    jr z,tb_exit
+    cp K_UP
+    jr z,tb_up
+    cp K_DOWN
+    jr z,tb_down
+    cp K_ENTER
+    jr z,tb_edit
+    jp tb_loop
+tb_exit:
+    ld a,9
+    ld (fx_ndig),a
+    ret
+tb_up:
+    ld hl,(gr_off)
+    dec hl
+    ld (gr_off),hl
+    jp tb_loop
+tb_down:
+    ld hl,(gr_off)
+    inc hl
+    ld (gr_off),hl
+    jp tb_loop
+tb_edit:
+    ld hl,gr_ts
+    call fx_lda
+    ld hl,MS_T_START
+    call m_tr
+    call gr_prompt
+    jr c,tb_e2
+    ld de,gr_ts
+    call fx_sta
+tb_e2:
+    ld hl,gr_tp
+    call fx_lda
+    ld hl,MS_T_STEP
+    call m_tr
+    call gr_prompt
+    jr c,tb_e3
+    ld a,(fx_a)
+    or a
+    jr z,tb_e3
+    ld de,gr_tp
+    call fx_sta
+tb_e3:
+    ld hl,0
+    ld (gr_off),hl
+    jp tb_loop
+
+tb_put:                         ; HL text (<= 8 chars), B col, C y
+    ld de,gr_tmpb
+    push bc
+    ld b,8
+tp1:
+    ld a,(hl)
+    ld (de),a
+    or a
+    jr z,tp2
+    inc hl
+    inc de
+    djnz tp1
+    xor a
+    ld (de),a
+tp2:
+    pop bc
+    ld hl,gr_tmpb
+    jp S_PUTS

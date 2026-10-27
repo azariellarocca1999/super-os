@@ -1,0 +1,39 @@
+; Demo "TI-OS / Ion" program: only RST $28 B_CALLs and plotSScreen. Header: C9 30 xx (Ion style).
+#include "compat/ion.inc"
+.org userMem
+    .db $C9
+    jr nc,start
+    .db "TI-OS DEMO",0
+start:
+    bcall(_ClrLCDFull)
+    bcall(_HomeUp)
+    ld hl,msg
+    bcall(_PutS)
+    ld hl,plotSScreen+(12*20)
+    ld b,12
+fill:
+    ld (hl),$FF
+    inc hl
+    djnz fill
+    ionFastCopy
+    ld d,0
+loop:
+    bcall(_GetCSC)
+    cp skClear
+    ret z
+    ld hl,plotSScreen+(12*30)
+    ld a,d
+    and 7
+    ld e,a
+    ld a,$80
+    inc e
+sh: dec e
+    jr z,shd
+    rrca
+    jr sh
+shd:
+    ld (hl),a
+    ionFastCopy
+    inc d
+    jr loop
+msg: .db "HELLO TI-OS",0

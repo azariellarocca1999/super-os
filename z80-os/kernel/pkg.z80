@@ -1,0 +1,301 @@
+; =============================================================================
+; Package store in flash (OTA-installed programs).
+;   directory : page $20, 16-byte entries   name[8] page[1] off[2] len[2] type[1] flags[1] pad[1]
+;   data      : pages $24..$6F, appended sequentially (a package may cross page boundaries)
+; Erased flash = $FF: an entry whose name[0] = $FF is free.  flags bit0 = 1 active; programming it to 0 deletes.
+; Install order: data first, directory entry last -> a power loss mid-install leaves no half package.
+; Programs are loaded at userMem ($9D95) and started with run_userprog (TI-OS / Ion style).
+; Up to 255 entries; one package <= 9 KB (the UI limits it to what fits at userMem).
+; =============================================================================
+v_knp       .equ VARS+$C0       ; next free data page
+v_kno       .equ VARS+$C1       ; next free data offset (16 bit)
+v_kidx      .equ VARS+$C3       ; first free directory index
+v_kname     .equ VARS+$C4       ; name pointer (16 bit)
+v_kdata     .equ VARS+$C6       ; data pointer (16 bit)
+v_klen      .equ VARS+$C8       ; length (16 bit)
+v_ktype     .equ VARS+$CA
+
+; A = entry index -> PKGREC filled, HL = PKGREC.  CF = free / no such entry.
+pkg_entry:
+    ld l,a
+    ld h,0
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    ld de,$4000
+    add hl,de
+    in a,(P_BANKA)
+    push af
+    ld a,PG_PKGDIR
+    out (P_BANKA),a
+    ld a,(hl)
+    inc a
+    jr z,pkg_entry_free
+    ld de,PKGREC
+    ld bc,16
+    ldir
+    pop af
+    out (P_BANKA),a
+    ld hl,PKGREC
+    or a
+    ret
+pkg_entry_free:
+    pop af
+    out (P_BANKA),a
+    scf
+    ret
+
+; HL = name (0-terminated, <= 8 chars) -> A = index of the ACTIVE entry with that name, CF = not found
+pkg_find:
+    ld (v_kname),hl
+    ld b,0
+pkg_find_l:
+    ld a,b
+    push bc
+    call pkg_entry
+    pop bc
+    ret c                       ; end of directory: not found
+    ld a,(PKGREC+PK_FLAGS)
+    and 1
+    jr z,pkg_find_next          ; deleted
+    ld de,(v_kname)
+    ld hl,PKGREC
+    ld c,8
+pkg_find_c:
+    ld a,(de)
+    cp (hl)
+    jr nz,pkg_find_next
+    or a
+    jr z,pkg_find_yes
+    inc de
+    inc hl
+    dec c
+    jr nz,pkg_find_c
+pkg_find_yes:
+    ld a,b
+    or a
+    ret
+pkg_find_next:
+    inc b
+    ld a,b
+    cp 255
+    jr c,pkg_find_l
+    scf
+    ret
+
+; HL = name, DE = data (RAM), BC = length, A = type.   CF = failed (exists / full / refused)
+pkg_install:
+    ld (v_ktype),a
+    ld (v_kdata),de
+    ld (v_klen),bc
+    call pkg_find
+    jp nc,pkg_install_fail      ; the name is already installed: delete it first
+    ld a,PG_PKGDATA
+    ld (v_knp),a
+    ld hl,$4000
+    ld (v_kno),hl
+    ld b,0
+pkg_install_scan:               ; find the first free entry and the end of the data area in use
+    ld a,b
+    push bc
+    call pkg_entry
+    pop bc
+    jr c,pkg_install_free
+    ld a,(PKGREC+PK_PAGE)
+    cp PG_PKGDATA               ; an entry outside the data area = foreign data (an old TI-OS archive) or a corrupt directory:
+    jp c,pkg_install_fail       ; refuse to install (OTA > ERASE ALL formats the store)
+    cp PG_PKGEND+1
+    jp nc,pkg_install_fail
+    ld c,a
+    ld hl,(PKGREC+PK_OFF)
+    ld de,(PKGREC+PK_LEN)
+    add hl,de                   ; end offset (may run past $7FFF)
+    ld a,h
+    sub $40                     ; relative to the page start
+    srl a
+    srl a
+    srl a
+    srl a
+    srl a
+    srl a                       ; pages crossed = (rel high byte) >> 6
+    add a,c
+    ld (v_knp),a
+    ld a,h
+    and $3F
+    or $40
+    ld h,a
+    ld (v_kno),hl
+    inc b
+    ld a,b
+    cp 255
+    jr c,pkg_install_scan
+    jp pkg_install_fail         ; directory full
+pkg_install_free:
+    ld a,b
+    ld (v_kidx),a
+    ld hl,(v_kno)               ; will it fit?  end page = page + ((off - $4000 + len) >> 14)
+    ld de,(v_klen)
+    add hl,de
+    ld a,h
+    sub $40
+    srl a
+    srl a
+    srl a
+    srl a
+    srl a
+    srl a
+    ld c,a
+    ld a,(v_knp)
+    add a,c
+    cp PG_PKGEND+1
+    jr nc,pkg_install_fail
+    ld a,(v_knp)
+    ld hl,(v_kno)
+    ld de,(v_kdata)
+    ld bc,(v_klen)
+    call flash_write_block      ; 1) the data
+    jr c,pkg_install_fail
+    ld hl,PKGREC                ; 2) the directory entry
+    ld de,PKGREC+1
+    ld bc,15
+    ld (hl),0
+    ldir
+    ld hl,(v_kname)
+    ld de,PKGREC
+    ld b,8
+pkg_install_nm:
+    ld a,(hl)
+    or a
+    jr z,pkg_install_np
+    ld (de),a
+    inc hl
+    inc de
+    djnz pkg_install_nm
+    jr pkg_install_f2
+pkg_install_np:
+    ld a,' '
+pkg_install_pl:
+    ld (de),a
+    inc de
+    djnz pkg_install_pl
+pkg_install_f2:
+    ld a,(v_knp)
+    ld (PKGREC+PK_PAGE),a
+    ld hl,(v_kno)
+    ld (PKGREC+PK_OFF),hl
+    ld hl,(v_klen)
+    ld (PKGREC+PK_LEN),hl
+    ld a,(v_ktype)
+    ld (PKGREC+PK_TYPE),a
+    ld a,$FF
+    ld (PKGREC+PK_FLAGS),a
+    ld (PKGREC+15),a
+    ld a,(v_kidx)
+    ld l,a
+    ld h,0
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    ld de,$4000
+    add hl,de
+    ld a,PG_PKGDIR
+    ld de,PKGREC
+    ld bc,16
+    call flash_write_block
+    ret
+pkg_install_fail:
+    scf
+    ret
+
+; A = index, DE = destination (RAM) -> BC = length, CF = no such entry
+pkg_load:
+    push de
+    call pkg_entry
+    pop de
+    ret c
+    ld hl,(PKGREC+PK_LEN)
+    ld (v_klen),hl
+    ld a,(PKGREC+PK_PAGE)
+    ld (v_knp),a
+    ld hl,(PKGREC+PK_OFF)
+    ld (v_kno),hl
+    ld (v_kdata),de
+pkg_load_l:
+    ld hl,(v_klen)
+    ld a,h
+    or l
+    jr z,pkg_load_done
+    ld hl,$8000                 ; chunk = min(remaining, $8000 - offset)
+    ld de,(v_kno)
+    or a
+    sbc hl,de
+    ld b,h
+    ld c,l
+    ld hl,(v_klen)
+    or a
+    sbc hl,bc
+    jr nc,pkg_load_c            ; remaining >= room: take the room
+    ld bc,(v_klen)
+pkg_load_c:
+    push bc
+    ld a,(v_knp)
+    ld hl,(v_kno)
+    ld de,(v_kdata)
+    call bank_copy
+    pop bc
+    ld hl,(v_kdata)
+    add hl,bc
+    ld (v_kdata),hl
+    ld hl,(v_kno)
+    add hl,bc
+    ld (v_kno),hl
+    ld hl,(v_klen)
+    or a
+    sbc hl,bc
+    ld (v_klen),hl
+    ld a,(v_kno+1)
+    cp $80
+    jr c,pkg_load_l
+    ld a,(v_knp)
+    inc a
+    ld (v_knp),a
+    ld hl,$4000
+    ld (v_kno),hl
+    jr pkg_load_l
+pkg_load_done:
+    ld bc,(PKGREC+PK_LEN)
+    or a
+    ret
+
+; A = index: mark the entry deleted (programs its flags byte to 0)
+pkg_delete:
+    ld l,a
+    ld h,0
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    ld de,$4000+PK_FLAGS
+    add hl,de
+    ld b,PG_PKGDIR
+    xor a
+    jp flash_write_byte
+
+; erase the whole store: the directory sector and every data sector that was used
+pkg_format:
+    ld b,PG_PKGDIR
+    call flash_erase_sector
+    ret c
+    ld a,PG_PKGDATA
+pkg_format_l:
+    push af
+    ld b,a
+    call flash_erase_sector
+    pop af
+    add a,4
+    cp PG_PKGEND+1
+    jr c,pkg_format_l
+    or a
+    ret

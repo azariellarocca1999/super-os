@@ -1,0 +1,606 @@
+; =============================================================================
+; conv.z80 -- number <-> text.   fx_tostr: FA -> fx_str (0-terminated, fx_ndig significant digits)
+;                                fx_fromstr: HL = text -> FA, HL = first unread char, carry = no number
+; Token $F3 (the EE key) is the exponent marker inside numbers.
+; =============================================================================
+TK_EE .equ $F3
+
+; FB = 10^A (A = 0..63); FA is preserved
+fx_p10:
+    ld (fx_misc+8),a
+    ld hl,fx_a
+    ld de,fx_sav
+    ld bc,6
+    ldir
+    call fx_one
+    ld hl,fxk_p1
+    ld b,6
+fx_p10l:
+    push bc
+    push hl
+    ld a,(fx_misc+8)
+    srl a
+    ld (fx_misc+8),a
+    jr nc,fx_p10n
+    pop hl
+    push hl
+    call fx_ldb
+    call fx_mul
+fx_p10n:
+    pop hl
+    ld de,6
+    add hl,de
+    pop bc
+    djnz fx_p10l
+    call fx_ab
+    ld hl,fx_sav
+    jp fx_lda
+
+; fx_i /= 10 (u32), A = remainder
+fx_div10:
+    ld hl,fx_i
+    xor a
+    ld d,4
+fx_d10a:
+    ld c,(hl)
+    ld b,8
+fx_d10b:
+    sla c
+    rla
+    cp 10
+    jr c,fx_d10c
+    sub 10
+    inc c
+fx_d10c:
+    djnz fx_d10b
+    ld (hl),c
+    inc hl
+    dec d
+    jr nz,fx_d10a
+    ret
+
+; fx_i = fx_i * 10 + A
+fx_mul10add:
+    ld (fx_misc+9),a
+    ld hl,fx_i
+    ld de,fx_qr
+    ld bc,4
+    ldir
+    ld hl,fx_qr+3               ; x * 2
+    sla (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    ld hl,fx_qr
+    ld de,fx_i
+    ld bc,4
+    ldir
+    ld b,2                      ; x * 8
+fx_m10a:
+    ld hl,fx_i+3
+    sla (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    djnz fx_m10a
+    ld hl,fx_qr+3
+    ld de,fx_i+3
+    ld b,4
+    or a
+fx_m10b:
+    ld a,(de)
+    adc a,(hl)
+    ld (de),a
+    dec hl
+    dec de
+    djnz fx_m10b
+    ld a,(fx_misc+9)
+    ld hl,fx_i+3
+    add a,(hl)
+    ld (hl),a
+    ret nc
+    dec hl
+    inc (hl)
+    ret nz
+    dec hl
+    inc (hl)
+    ret nz
+    dec hl
+    inc (hl)
+    ret
+
+; ---- FA -> text --------------------------------------------------------------------------------------------
+fx_tostr:
+    ld hl,fx_str
+    ld a,(fx_a)
+    or a
+    jr nz,fx_ts1
+    ld (hl),'0'
+    inc hl
+    ld (hl),0
+    ret
+fx_ts1:
+    ld a,(fx_a+1)
+    or a
+    jr z,fx_ts2
+    ld (hl),'-'
+    inc hl
+fx_ts2:
+    ld (fx_ptr),hl
+    xor a
+    ld (fx_a+1),a
+    ld a,(fx_a)
+    sub 129                     ; e2 - 1 (signed)
+    ld l,a
+    ld h,0
+    jr nc,fx_ts3
+    dec h
+fx_ts3:                         ; HL = (e2-1) * 77
+    ld d,h
+    ld e,l
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,de                   ; *9
+    add hl,hl
+    add hl,hl
+    add hl,hl                   ; *72
+    add hl,de
+    add hl,de
+    add hl,de
+    add hl,de
+    add hl,de                   ; *77
+    ld a,h                      ; floor(/256)
+    ld l,a
+    ld h,0
+    bit 7,a
+    jr z,fx_ts4
+    dec h
+fx_ts4:
+    ld (fx_e10),hl
+    ; x' = x / 10^e10
+    ld a,l
+    or a
+    jr z,fx_ts6
+    bit 7,a
+    jr nz,fx_ts5
+    call fx_p10
+    call fx_div
+    jr fx_ts6
+fx_ts5:
+    neg
+    call fx_p10
+    call fx_mul
+fx_ts6:
+    ld b,3                      ; normalise into [1, 10)
+fx_ts7:
+    push bc
+    ld hl,fxk_ten
+    call fx_kb
+    call fx_cmp
+    jr c,fx_ts8                 ; < 10
+    call fx_div
+    ld hl,(fx_e10)
+    inc hl
+    ld (fx_e10),hl
+    jr fx_ts9
+fx_ts8:
+    ld hl,fxk_one
+    call fx_kb
+    call fx_cmp
+    jr nc,fx_ts10               ; >= 1: done
+    ld hl,fxk_ten
+    call fx_kb
+    call fx_mul
+    ld hl,(fx_e10)
+    dec hl
+    ld (fx_e10),hl
+fx_ts9:
+    pop bc
+    djnz fx_ts7
+    jr fx_ts11
+fx_ts10:
+    pop bc
+fx_ts11:
+    ld hl,fxk_e8
+    call fx_kb
+    call fx_mul
+    ld hl,fxk_half
+    call fx_kb
+    call fx_add
+    call fx_to_u32              ; n in [1e8, 1e9]
+    ld hl,fx_dig+8
+    ld b,9
+fx_ts12:
+    push bc
+    push hl
+    call fx_div10
+    pop hl
+    ld (hl),a
+    dec hl
+    pop bc
+    djnz fx_ts12
+    ld a,(fx_dig)               ; n could be 1e9 -> leading digit overflowed (stays 0 with the digits 0..): treat
+    or a
+    jr nz,fx_ts13
+    ld a,(fx_dig+1)
+    or a
+    jr nz,fx_ts13
+    ; n == 1e9 gives digits "1000000000" -> 9 digit window shows 000000000 : renormalise
+    ld a,1
+    ld (fx_dig),a
+    ld hl,(fx_e10)
+    inc hl
+    ld (fx_e10),hl
+fx_ts13:
+    ; round to fx_ndig significant digits
+    ld a,(fx_ndig)
+    or a
+    jr z,fx_tsn
+    cp 9
+    jr nc,fx_tsn
+    ld c,a
+    ld b,0
+    ld hl,fx_dig
+    add hl,bc                   ; first dropped digit
+    ld a,(hl)
+    cp 5
+    jr c,fx_tsz
+    dec hl
+    ld b,c
+fx_tsr:
+    inc (hl)
+    ld a,(hl)
+    cp 10
+    jr c,fx_tsz
+    ld (hl),0
+    dec hl
+    djnz fx_tsr
+    ld a,1                      ; carried out of the first digit
+    ld (fx_dig),a
+    ld hl,(fx_e10)
+    inc hl
+    ld (fx_e10),hl
+fx_tsz:
+    ld a,(fx_ndig)
+    ld c,a
+    ld b,0
+    ld hl,fx_dig
+    add hl,bc
+    ld a,9
+    sub c
+    ld b,a
+    xor a
+fx_tsz1:
+    ld (hl),a
+    inc hl
+    djnz fx_tsz1
+fx_tsn:
+    ; length without trailing zeros -> C
+    ld c,9
+    ld hl,fx_dig+8
+fx_tsl:
+    ld a,(hl)
+    or a
+    jr nz,fx_tsl2
+    dec hl
+    dec c
+    jr nz,fx_tsl
+    inc c
+fx_tsl2:
+    ld hl,(fx_e10)
+    ld de,(fx_ptr)
+    bit 7,h
+    jr nz,fx_tneg
+    ld a,l
+    cp 10
+    jr nc,fx_tsci
+    ld a,h
+    or a
+    jr nz,fx_tsci
+    ; fixed, e10 in 0..9: integer part has e10+1 digits
+    ld b,l
+    inc b
+    ld hl,fx_dig
+fx_tfi:
+    ld a,c                      ; digits remaining?
+    or a
+    jr z,fx_tfz
+    ld a,(hl)
+    add a,'0'
+    inc hl
+    dec c
+    jr fx_tfw
+fx_tfz:
+    ld a,'0'
+fx_tfw:
+    ld (de),a
+    inc de
+    djnz fx_tfi
+    ld a,c
+    or a
+    jr z,fx_tend
+    ld a,'.'
+    ld (de),a
+    inc de
+fx_tfr:
+    ld a,(hl)
+    add a,'0'
+    ld (de),a
+    inc hl
+    inc de
+    dec c
+    jr nz,fx_tfr
+fx_tend:
+    xor a
+    ld (de),a
+    ret
+fx_tneg:
+    ld a,l                      ; e10 < 0: fixed only for -4..-1
+    cp $FC
+    jr c,fx_tsci
+    ld a,'0'
+    ld (de),a
+    inc de
+    ld a,'.'
+    ld (de),a
+    inc de
+    ld a,l
+    cpl
+    ld b,a                      ; -e10 - 1 zeros
+    or a
+    jr z,fx_tnz
+fx_tn1:
+    ld a,'0'
+    ld (de),a
+    inc de
+    djnz fx_tn1
+fx_tnz:
+    ld hl,fx_dig
+    jr fx_tfr
+fx_tsci:
+    ld hl,fx_dig
+    ld a,(hl)
+    add a,'0'
+    ld (de),a
+    inc hl
+    inc de
+    dec c
+    jr z,fx_tsc2
+    ld a,'.'
+    ld (de),a
+    inc de
+fx_tsc1:
+    ld a,(hl)
+    add a,'0'
+    ld (de),a
+    inc hl
+    inc de
+    dec c
+    jr nz,fx_tsc1
+fx_tsc2:
+    ld a,'E'
+    ld (de),a
+    inc de
+    ld hl,(fx_e10)
+    bit 7,h
+    jr z,fx_tsc3
+    ld a,'-'
+    ld (de),a
+    inc de
+    ld a,l
+    neg
+    ld l,a
+    ld h,0
+    jr fx_tsc4
+fx_tsc3:
+fx_tsc4:
+    ld a,l
+    ld b,'0'-1
+fx_tsc5:
+    inc b
+    sub 10
+    jr nc,fx_tsc5
+    add a,10
+    ld c,a
+    ld a,b
+    cp '0'
+    jr z,fx_tsc6
+    ld (de),a
+    inc de
+fx_tsc6:
+    ld a,c
+    add a,'0'
+    ld (de),a
+    inc de
+    xor a
+    ld (de),a
+    ret
+
+; ---- text -> FA --------------------------------------------------------------------------------------------
+fx_fromstr:
+    xor a
+    ld (fx_flag),a              ; stored significant digits
+    ld (fx_flag2),a             ; decimal point seen
+    ld (fx_misc+10),a           ; any digit seen
+    ld (fx_i),a
+    ld (fx_i+1),a
+    ld (fx_i+2),a
+    ld (fx_i+3),a
+    ld de,0
+    ld (fx_e10),de
+fx_fs1:
+    ld a,(hl)
+    cp '.'
+    jr nz,fx_fs2
+    ld a,(fx_flag2)
+    or a
+    jr nz,fx_fsx                ; second point: stop
+    inc a
+    ld (fx_flag2),a
+    inc hl
+    jr fx_fs1
+fx_fs2:
+    sub '0'
+    cp 10
+    jr nc,fx_fsx
+    ld (fx_misc+10),a           ; (non-zero marks "digit seen"; store 1 below)
+    ld c,a
+    ld a,1
+    ld (fx_misc+10),a
+    ld a,(fx_flag)
+    cp 9
+    jr nc,fx_fsover
+    or a
+    jr nz,fx_fsd
+    ld a,c
+    or a
+    jr nz,fx_fsd
+    ld a,(fx_flag2)             ; leading zero
+    or a
+    jr z,fx_fsnx
+    push hl
+    ld hl,(fx_e10)
+    dec hl
+    ld (fx_e10),hl
+    pop hl
+    jr fx_fsnx
+fx_fsd:
+    push hl
+    ld a,c
+    call fx_mul10add
+    ld hl,fx_flag
+    inc (hl)
+    ld a,(fx_flag2)
+    or a
+    jr z,fx_fsd2
+    ld hl,(fx_e10)
+    dec hl
+    ld (fx_e10),hl
+fx_fsd2:
+    pop hl
+    jr fx_fsnx
+fx_fsover:
+    ld a,(fx_flag2)
+    or a
+    jr nz,fx_fsnx
+    push hl
+    ld hl,(fx_e10)
+    inc hl
+    ld (fx_e10),hl
+    pop hl
+fx_fsnx:
+    inc hl
+    jr fx_fs1
+fx_fsx:
+    ld a,(fx_misc+10)
+    or a
+    jr nz,fx_fs3
+    call fx_zero
+    scf
+    ret
+fx_fs3:
+    ld a,(hl)
+    cp TK_EE
+    jr nz,fx_fs6
+    inc hl
+    ld a,(hl)
+    ld b,0                      ; sign of the exponent
+    cp '-'
+    jr nz,fx_fs4
+    inc b
+    inc hl
+    jr fx_fs5
+fx_fs4:
+    cp '+'
+    jr nz,fx_fs5
+    inc hl
+fx_fs5:
+    ld c,0                      ; exponent value
+fx_fs5a:
+    ld a,(hl)
+    sub '0'
+    cp 10
+    jr nc,fx_fs5b
+    ld d,a
+    ld a,c
+    add a,a
+    add a,a
+    add a,c
+    add a,a                     ; *10
+    add a,d
+    ld c,a
+    inc hl
+    jr fx_fs5a
+fx_fs5b:
+    push hl
+    ld a,b
+    or a
+    ld a,c
+    jr z,fx_fs5c
+    neg
+fx_fs5c:
+    ld e,a
+    ld d,0
+    bit 7,e
+    jr z,fx_fs5d
+    dec d
+fx_fs5d:
+    ld hl,(fx_e10)
+    add hl,de
+    ld (fx_e10),hl
+    pop hl
+fx_fs6:
+    push hl
+    call fx_from_u32
+    ld a,(fx_a)
+    or a
+    jr z,fx_fs9
+    ld hl,(fx_e10)
+    ld a,h
+    or l
+    jr z,fx_fs9
+    bit 7,h
+    jr nz,fx_fs7
+    ld a,l
+    cp 39
+    jr nc,fx_fsbig
+    ld a,h
+    or a
+    jr nz,fx_fsbig
+    ld a,l
+    call fx_p10
+    call fx_mul
+    jr fx_fs9
+fx_fs7:
+    ld a,l
+    cpl
+    ld l,a
+    ld a,h
+    cpl
+    ld h,a
+    inc hl
+    ld a,h
+    or a
+    jr nz,fx_fsbig2
+    ld a,l
+    cp 39
+    jr nc,fx_fsbig2
+    call fx_p10
+    call fx_div
+    jr fx_fs9
+fx_fsbig:
+    call fx_over
+    jr fx_fs9
+fx_fsbig2:
+    call fx_zero
+fx_fs9:
+    pop hl
+    or a
+    ret

@@ -1,0 +1,63 @@
+; =============================================================================
+; Generic UI library living in page 0 so every UI page can use it (no string tables here).
+; =============================================================================
+; HL = title string pointer.  Clears the screen, status bar, title bar (inverted, y=7).
+ui_begin:
+    push hl
+    call gfx_clear
+    call status_draw
+    ld a,$F0
+    ld (v_invert),a
+    ld b,0
+    ld c,7
+    ld d,12
+    ld e,6
+    ld a,$FF
+    call gfx_fill
+    pop hl
+    ld b,0
+    ld c,7
+    call puts_small
+    xor a
+    ld (v_invert),a
+    ret
+
+ui_line_y:                      ; A = content line number -> C = y (14 + n*lineheight of the current font)
+    ld c,14
+    ld b,a
+    ld a,(v_font)
+    ld d,6
+    or a
+    jr z,ui_line_y_l
+    ld d,8
+ui_line_y_l:
+    ld a,b
+    or a
+    ret z
+    ld a,c
+    add a,d
+    ld c,a
+    dec b
+    jr ui_line_y_l
+
+ui_cols:                        ; -> A = text columns of the current font (24 or 16)
+    ld a,(v_font)
+    or a
+    ld a,24
+    ret z
+    ld a,16
+    ret
+
+
+ui_wait_any:
+    call lcd_blit
+    jp wait_key
+
+inflate_reply:                  ; HL = RESPBUF stream -> TEXTBUF (0 terminated)
+    ld de,TEXTBUF
+    call dzx0_standard
+    xor a
+    ld (de),a
+    ld (v_vend),de
+    ret
+

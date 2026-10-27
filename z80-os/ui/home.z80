@@ -1,0 +1,370 @@
+; ---- home: status bar, tabs F1-F5, numbered launcher 1-9 -----------------------------------------------
+; item (5 bytes): .dw name STR id, .dw handler, .db milestone     terminator: .dw $FFFF
+tab_tables: .dw tab0,tab1,tab2,tab3,tab4
+
+tab0:
+    .dw STR_APP_CHAT,app_chat
+    .db 0
+    .dw STR_APP_WIKI,app_wiki
+    .db 0
+    .dw STR_APP_CLOCK,app_clock
+    .db 0
+    .dw STR_APP_DASH,app_dash
+    .db 0
+    .dw STR_APP_WIFI,app_wifi
+    .db 0
+    .dw STR_APP_SET,app_settings
+    .db 0
+    .dw STR_APP_SLEEP,app_sleep
+    .db 0
+    .dw STR_APP_INFO,app_info
+    .db 0
+    .dw STR_APP_BOOKS,app_books
+    .db 0
+    .dw $FFFF
+tab1:
+    .dw STR_APP_CALC,app_calc
+    .db 0
+    .dw STR_APP_GRAPH,app_graph
+    .db 0
+    .dw STR_APP_CAS,app_cas
+    .db 0
+    .dw STR_APP_STEP,app_step
+    .db 0
+    .dw STR_APP_PTABLE,app_ptable
+    .db 0
+    .dw STR_APP_CONV,app_conv
+    .db 0
+    .dw STR_APP_CONST,app_const
+    .db 0
+    .dw $FFFF
+tab2:
+    .dw STR_APP_CHAT,app_chat
+    .db 0
+    .dw STR_APP_STEP,app_step
+    .db 0
+    .dw STR_APP_WIKI,app_wiki
+    .db 0
+    .dw STR_APP_WIFI,app_wifi
+    .db 0
+    .dw STR_APP_OTA,app_ota
+    .db 0
+    .dw STR_APP_WEATHER,app_weather
+    .db 0
+    .dw $FFFF
+tab3:
+    .dw STR_APP_TETRIS,app_tetris
+    .db 0
+    .dw STR_APP_SNAKE,app_snake
+    .db 0
+    .dw STR_APP_BREAK,app_break
+    .db 0
+    .dw STR_APP_PONG,app_pong
+    .db 0
+    .dw STR_APP_2048,app_2048
+    .db 0
+    .dw STR_APP_INVAD,app_invad
+    .db 0
+    .dw STR_APP_MINES,app_mines
+    .db 0
+    .dw STR_APP_CLASSIC,app_classic
+    .db 0
+    .dw STR_APP_PACKC,app_packc
+    .db 0
+    .dw $FFFF
+tab4:
+    .dw STR_APP_DASH,app_dash
+    .db 0
+    .dw STR_APP_CLOCK,app_clock
+    .db 0
+    .dw STR_APP_SET,app_settings
+    .db 0
+    .dw STR_APP_SLEEP,app_sleep
+    .db 0
+    .dw STR_APP_INFO,app_info
+    .db 0
+    .dw STR_APP_OTA,app_ota
+    .db 0
+    .dw STR_APP_DIAG,app_diag
+    .db 0
+    .dw $FFFF
+
+home_items:                     ; -> HL = items of the current tab
+    ld a,(v_tab)
+    add a,a
+    ld e,a
+    ld d,0
+    ld hl,tab_tables
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ex de,hl
+    ret
+
+home_count:                     ; -> A = number of items in the current tab
+    call home_items
+    push hl
+    pop ix
+    ld b,0
+home_count_l:
+    ld a,(ix+0)
+    and (ix+1)
+    inc a
+    jr z,home_count_x
+    inc b
+    ld de,5
+    add ix,de
+    jr home_count_l
+home_count_x:
+    ld a,b
+    ret
+
+home_draw:
+    ld a,(v_font)
+    push af
+    xor a
+    ld (v_font),a               ; the launcher always uses the dense 4x6 font
+    call S_GFX_CLEAR
+    call S_STATUS_DRAW
+    xor a
+    ld (v_row),a
+home_draw_t:                    ; ---- tabs, each padded to 5 cells ----
+    ld a,(v_row)
+    add a,a
+    ld l,a
+    ld h,0
+    ld de,STR_TAB_HOME
+    add hl,de
+    call tr
+    ld de,NUMBUF
+    ld b,5
+home_draw_cp:
+    ld a,(hl)
+    or a
+    jr z,home_draw_pad
+    ld (de),a
+    inc hl
+    inc de
+    djnz home_draw_cp
+    jr home_draw_done
+home_draw_pad:
+    ld a,' '
+home_draw_pl:
+    ld (de),a
+    inc de
+    djnz home_draw_pl
+home_draw_done:
+    xor a
+    ld (de),a
+    ld a,(v_row)
+    ld b,a
+    add a,a
+    add a,a
+    add a,b
+    ld b,a                      ; col = tab * 5
+    ld a,(v_tab)
+    ld c,a
+    ld a,(v_row)
+    cp c
+    ld a,0
+    jr nz,home_draw_inv
+    ld a,$F0
+home_draw_inv:
+    ld (v_invert),a
+    ld hl,NUMBUF
+    ld c,7
+    call S_PUTS
+    xor a
+    ld (v_invert),a
+    ld a,(v_row)
+    inc a
+    ld (v_row),a
+    cp 5
+    jr nz,home_draw_t
+    call home_items             ; ---- items ----
+    push hl
+    pop ix
+    xor a
+    ld (v_row),a
+home_draw_item:
+    ld l,(ix+0)
+    ld h,(ix+1)
+    ld a,h
+    and l
+    inc a
+    jr z,home_draw_end
+    call tr
+    push hl
+    ld a,(v_row)
+    ld b,0
+    cp 5
+    jr c,home_draw_col
+    sub 5
+    ld b,12
+home_draw_col:
+    ld c,a
+    add a,a
+    add a,c
+    add a,a                     ; row_in_col * 6
+    add a,14
+    ld c,a                      ; y
+    push bc
+    ld a,(v_row)
+    add a,'1'
+    call S_PUTCHAR
+    pop bc
+    inc b
+    inc b
+    pop hl
+    push bc
+    call S_PUTS
+    pop bc
+    ld a,(v_row)                ; highlight the selected item
+    ld d,a
+    ld a,(v_sel)
+    cp d
+    jr nz,home_draw_nx
+    ld a,b
+    srl a                       ; x byte = col/2, minus the 2 column offset -> restart at the cell origin
+    sub 1
+    ld b,a
+    ld d,6
+    ld e,6
+    call S_GFX_INVERT
+home_draw_nx:
+    ld de,5
+    add ix,de
+    ld a,(v_row)
+    inc a
+    ld (v_row),a
+    cp 9
+    jr c,home_draw_item
+home_draw_end:
+    ld hl,STR_HINT_HOME
+    call tr
+    ld b,0
+    ld c,58
+    call S_PUTS
+    pop af
+    ld (v_font),a
+    ret
+
+ui_home:
+    xor a
+    ld (v_sel),a
+    ld (v_tab),a
+home_loop:
+    xor a
+    call S_SET_MODE
+    call home_draw
+    call S_LCD_BLIT
+    call S_WAIT_KEY
+    ld b,a
+    ld hl,home_fkeys            ; F1..F5 select a tab
+    ld c,0
+home_fk:
+    ld a,(hl)
+    inc hl
+    cp b
+    jr z,home_settab
+    inc c
+    ld a,c
+    cp 5
+    jr c,home_fk
+    ld hl,home_digits           ; 1..9 open directly
+    ld c,0
+home_dg:
+    ld a,(hl)
+    inc hl
+    cp b
+    jr z,home_open_c
+    inc c
+    ld a,c
+    cp 9
+    jr c,home_dg
+    ld a,b
+    cp K_ENTER
+    jr z,home_open_sel
+    cp K_DOWN
+    jr z,home_down
+    cp K_UP
+    jr z,home_up
+    cp K_RIGHT
+    jr z,home_right
+    cp K_LEFT
+    jr z,home_left
+    jr home_loop
+home_settab:
+    ld a,c
+    ld (v_tab),a
+    xor a
+    ld (v_sel),a
+    jr home_loop
+home_up:
+    ld a,(v_sel)
+    or a
+    jr z,home_loop
+    dec a
+    ld (v_sel),a
+    jr home_loop
+home_down:
+    call home_count
+    ld b,a
+    ld a,(v_sel)
+    inc a
+    cp b
+    jr nc,home_loop
+    ld (v_sel),a
+    jr home_loop
+home_right:
+    call home_count
+    ld b,a
+    ld a,(v_sel)
+    add a,5
+    cp b
+    jr nc,home_loop
+    ld (v_sel),a
+    jr home_loop
+home_left:
+    ld a,(v_sel)
+    sub 5
+    jp c,home_loop
+    ld (v_sel),a
+    jp home_loop
+home_open_sel:
+    ld a,(v_sel)
+    ld c,a
+home_open_c:
+    call home_count
+    ld b,a
+    ld a,c
+    cp b
+    jp nc,home_loop             ; digit beyond the list
+    ld (v_sel),a
+    call home_items
+    push hl
+    pop ix
+    ld a,(v_sel)
+    ld b,a
+    or a
+    jr z,home_open_go
+home_open_s:
+    ld de,5
+    add ix,de
+    djnz home_open_s
+home_open_go:
+    ld e,(ix+0)
+    ld d,(ix+1)                 ; DE = name id
+    ld a,(ix+4)                 ; A = milestone (for app_pending)
+    ld l,(ix+2)
+    ld h,(ix+3)
+    call home_call
+    call ui_mem_reset
+    call ui_setlang
+    jp home_loop
+home_call:
+    jp (hl)
+
+home_fkeys:   .db K_YEQ,K_WINDOW,K_ZOOM,K_TRACE,K_GRAPH
+home_digits:  .db K_1,K_2,K_3,K_4,K_5,K_6,K_7,K_8,K_9

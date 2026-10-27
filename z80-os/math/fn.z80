@@ -1,0 +1,651 @@
+; =============================================================================
+; fn.z80 -- elementary functions on FA (all take radians; degree handling is done by the evaluator)
+;   exp ln log10 log2 pow sin cos tan atan asin acos sinh cosh tanh asinh acosh atanh fact mod
+; =============================================================================
+
+; FA = polynomial in z (z = FA on entry); HL = coefficient table (highest degree first), B = count
+fx_poly:
+    push hl
+    push bc
+    ld hl,fx_a
+    ld de,fx_x
+    ld bc,6
+    ldir
+    pop bc
+    pop hl
+    push bc
+    call fx_lda
+    pop bc
+    dec b
+    ret z
+fx_py1:
+    push bc
+    push hl
+    ld hl,fx_x
+    call fx_ldb
+    call fx_mul
+    pop hl
+    push hl
+    call fx_ldb
+    call fx_add
+    pop hl
+    ld de,6
+    add hl,de
+    pop bc
+    djnz fx_py1
+    ret
+
+; ---- helpers used by the series ------------------------------------------------------------------
+fx_sv:                          ; fx_v = FA
+    ld hl,fx_a
+    ld de,fx_v
+    ld bc,6
+    ldir
+    ret
+fx_st_t:                        ; fx_t = FA
+    ld hl,fx_a
+    ld de,fx_t
+    ld bc,6
+    ldir
+    ret
+fx_st_u:
+    ld hl,fx_a
+    ld de,fx_u
+    ld bc,6
+    ldir
+    ret
+fx_sqr:                         ; FA = FA * FA
+    call fx_ab
+    jp fx_mul
+fx_kb:                          ; FB = constant at HL
+    jp fx_ldb
+fx_ka:
+    jp fx_lda
+
+; FA = FA + k (signed 16) in the exponent field (power of two scaling)
+fx_scale2:                      ; DE = k
+    ld a,(fx_a)
+    or a
+    ret z
+    ld l,a
+    ld h,0
+    add hl,de
+    ld (fx_ex),hl
+    jp fx_setex
+
+; ---- exp ----------------------------------------------------------------------------------------------
+fx_exp:
+    ld a,(fx_a)
+    or a
+    jp z,fx_one
+    cp 136                      ; |x| >= 128: certain overflow / underflow
+    jr c,fx_ex0
+    ld a,(fx_a+1)
+    or a
+    jp nz,fx_zero
+    jp fx_over
+fx_ex0:
+    call fx_sv                  ; fx_v = x
+    ld hl,fxk_invln2
+    call fx_kb
+    call fx_mul
+    ld hl,fxk_half
+    call fx_kb
+    call fx_add
+    call fx_floor
+    call fx_to_i16              ; HL = k
+    push hl
+    call fx_from_i16
+    call fx_st_t                ; fx_t = k
+    ld hl,fxk_ln2hi
+    call fx_kb
+    call fx_mul
+    call fx_ab
+    ld hl,fx_v
+    call fx_lda
+    call fx_sub                 ; x - k*ln2hi
+    call fx_st_u
+    ld hl,fx_t
+    call fx_lda
+    ld hl,fxk_ln2lo
+    call fx_kb
+    call fx_mul
+    call fx_ab
+    ld hl,fx_u
+    call fx_lda
+    call fx_sub                 ; r
+    ld hl,fxp_exp
+    ld b,13
+    call fx_poly
+    pop de
+    jp fx_scale2
+
+; ---- ln -----------------------------------------------------------------------------------------------
+fx_ln:
+    ld a,(fx_a)
+    or a
+    jp z,fx_domain
+    ld a,(fx_a+1)
+    or a
+    jp nz,fx_domain
+    ld a,(fx_a)
+    sub 128
+    ld l,a
+    ld h,0
+    jr nc,fx_ln1
+    dec h
+fx_ln1:
+    ld (fx_ptr),hl              ; e
+    ld a,128
+    ld (fx_a),a                 ; m in [0.5, 1)
+    ld hl,fxk_sqrt_half
+    call fx_kb
+    call fx_cmp
+    jr nc,fx_ln2
+    ld a,129
+    ld (fx_a),a                 ; m in [1, 1.414)
+    ld hl,(fx_ptr)
+    dec hl
+    ld (fx_ptr),hl
+fx_ln2:
+    call fx_st_t                ; m
+    ld hl,fxk_one
+    call fx_kb
+    call fx_sub                 ; m - 1
+    call fx_st_u
+    ld hl,fx_t
+    call fx_lda
+    ld hl,fxk_one
+    call fx_kb
+    call fx_add                 ; m + 1
+    call fx_ab
+    ld hl,fx_u
+    call fx_lda
+    call fx_div                 ; s = (m-1)/(m+1)
+    call fx_sv
+    call fx_sqr
+    ld hl,fxp_atanh
+    ld b,10
+    call fx_poly
+    ld hl,fx_v
+    call fx_kb
+    call fx_mul
+    call fx_double              ; ln m
+    ld hl,(fx_ptr)
+    ld a,h
+    or l
+    ret z
+    call fx_st_t
+    ld hl,(fx_ptr)
+    call fx_from_i16_hl
+    ld hl,fxk_ln2
+    call fx_kb
+    call fx_mul                 ; e * ln2
+    ld hl,fx_t
+    call fx_kb
+    jp fx_add
+
+fx_from_i16_hl:                 ; HL already holds the value
+    jp fx_from_i16
+
+fx_log10:
+    call fx_ln
+    ld hl,fxk_invln10
+    call fx_kb
+    jp fx_mul
+fx_log2:
+    call fx_ln
+    ld hl,fxk_log2e
+    call fx_kb
+    jp fx_mul
+fx_exp10:                       ; 10^x
+    ld hl,fxk_ln10
+    call fx_kb
+    call fx_mul
+    jp fx_exp
+
+; ---- sin / cos / tan -----------------------------------------------------------------------------------
+fx_cos:
+    ld a,1
+    jr fx_sc0
+fx_sin:
+    xor a
+fx_sc0:
+    ld (fx_flag),a              ; quadrant offset
+    ld a,(fx_a)
+    or a
+    jr nz,fx_sc1
+    ld a,(fx_flag)
+    or a
+    ret z                       ; sin 0 = 0
+    jp fx_one                   ; cos 0 = 1
+fx_sc1:
+    cp 144                      ; |x| >= 2^16: no precision left
+    jp nc,fx_domain
+    call fx_sv                  ; x
+    ld hl,fxk_invpi2
+    call fx_kb
+    call fx_mul
+    ld hl,fxk_half
+    call fx_kb
+    call fx_add
+    call fx_floor
+    call fx_to_i16              ; HL = k
+    ld a,(fx_flag)
+    add a,l
+    and 3
+    ld (fx_flag2),a             ; quadrant
+    call fx_from_i16
+    call fx_st_t                ; k
+    ld hl,fxk_pi2hi
+    call fx_kb
+    call fx_mul
+    call fx_ab
+    ld hl,fx_v
+    call fx_lda
+    call fx_sub
+    call fx_st_u
+    ld hl,fx_t
+    call fx_lda
+    ld hl,fxk_pi2lo
+    call fx_kb
+    call fx_mul
+    call fx_ab
+    ld hl,fx_u
+    call fx_lda
+    call fx_sub                 ; r in [-pi/4, pi/4]
+    call fx_sv                  ; fx_v = r
+    call fx_sqr                 ; z = r^2
+    ld a,(fx_flag2)
+    and 1
+    jr nz,fx_sc2
+    ld hl,fxp_sin
+    ld b,8
+    call fx_poly
+    ld hl,fx_v
+    call fx_kb
+    call fx_mul
+    jr fx_sc3
+fx_sc2:
+    ld hl,fxp_cos
+    ld b,8
+    call fx_poly
+fx_sc3:
+    ld a,(fx_flag2)
+    and 2
+    ret z
+    jp fx_neg
+
+fx_tan:
+    ld hl,fx_a
+    ld de,fx_c
+    ld bc,6
+    ldir                        ; keep x
+    call fx_sin
+    ld hl,fx_a
+    ld de,fx_d
+    ld bc,6
+    ldir                        ; sin
+    ld hl,fx_c
+    call fx_lda
+    call fx_cos
+    call fx_ab
+    ld hl,fx_d
+    call fx_lda
+    jp fx_div
+
+; ---- atan / asin / acos ----------------------------------------------------------------------------------
+fx_atan:
+    ld a,(fx_a)
+    or a
+    ret z
+    ld a,(fx_a+1)
+    ld (fx_flag),a              ; sign
+    xor a
+    ld (fx_a+1),a
+    ld (fx_flag2),a             ; inverted?
+    ld hl,fxk_one
+    call fx_kb
+    call fx_cmp
+    jr z,fx_at1
+    jr c,fx_at1
+    ld a,1
+    ld (fx_flag2),a
+    call fx_ab
+    call fx_one
+    call fx_div                 ; 1/x
+fx_at1:
+    ld b,2
+fx_at2:
+    push bc
+    call fx_sv                  ; x
+    call fx_sqr
+    ld hl,fxk_one
+    call fx_kb
+    call fx_add
+    call fx_sqrt
+    ld hl,fxk_one
+    call fx_kb
+    call fx_add                 ; 1 + sqrt(1+x^2)
+    call fx_ab
+    ld hl,fx_v
+    call fx_lda
+    call fx_div
+    pop bc
+    djnz fx_at2
+    call fx_sv
+    call fx_sqr
+    ld hl,fxp_atan
+    ld b,9
+    call fx_poly
+    ld hl,fx_v
+    call fx_kb
+    call fx_mul
+    call fx_double
+    call fx_double
+    ld a,(fx_flag2)
+    or a
+    jr z,fx_at3
+    call fx_ab
+    ld hl,fxk_pi2
+    call fx_lda
+    call fx_sub
+fx_at3:
+    ld a,(fx_flag)
+    or a
+    ret z
+    jp fx_neg
+
+fx_asin:
+    ld a,(fx_a)
+    or a
+    ret z
+    ld a,(fx_a+1)
+    ld (fx_misc),a              ; sign
+    xor a
+    ld (fx_a+1),a
+    ld hl,fxk_one
+    call fx_kb
+    call fx_cmp
+    jr z,fx_as9
+    jp nc,fx_domain             ; |x| > 1
+    call fx_sv
+    call fx_sqr
+    call fx_ab
+    call fx_one
+    call fx_sub                 ; 1 - x^2
+    call fx_sqrt
+    call fx_ab
+    ld hl,fx_v
+    call fx_lda
+    call fx_div
+    call fx_atan
+    jr fx_as8
+fx_as9:
+    ld hl,fxk_pi2
+    call fx_lda
+fx_as8:
+    ld a,(fx_misc)
+    or a
+    ret z
+    jp fx_neg
+
+fx_acos:
+    call fx_asin
+    ld a,(fx_err)
+    or a
+    ret nz
+    call fx_neg
+    call fx_ab
+    ld hl,fxk_pi2
+    call fx_lda
+    jp fx_add                   ; pi/2 - asin x
+
+; ---- hyperbolic ------------------------------------------------------------------------------------------
+fx_sinh:
+    call fx_hyp
+    call fx_sub
+    jp fx_halve
+fx_cosh:
+    call fx_hyp
+    call fx_add
+    jp fx_halve
+fx_hyp:                         ; FA = e^x, FB = e^-x
+    ld hl,fx_a
+    ld de,fx_d
+    ld bc,6
+    ldir
+    call fx_exp
+    ld hl,fx_a
+    ld de,fx_e
+    ld bc,6
+    ldir
+    ld hl,fx_d
+    call fx_lda
+    call fx_neg
+    call fx_exp
+    call fx_ab
+    ld hl,fx_e
+    jp fx_lda
+fx_tanh:
+    call fx_sv
+    call fx_double
+    call fx_exp                 ; E = e^(2x)
+    call fx_st_t
+    ld hl,fxk_one
+    call fx_kb
+    call fx_sub                 ; E - 1
+    call fx_st_u
+    ld hl,fx_t
+    call fx_lda
+    ld hl,fxk_one
+    call fx_kb
+    call fx_add                 ; E + 1
+    call fx_ab
+    ld hl,fx_u
+    call fx_lda
+    jp fx_div
+fx_asinh:                       ; ln(x + sqrt(x^2+1))
+    call fx_sv
+    call fx_sqr
+    ld hl,fxk_one
+    call fx_kb
+    call fx_add
+    call fx_sqrt
+    ld hl,fx_v
+    call fx_kb
+    call fx_add
+    jp fx_ln
+fx_acosh:                       ; ln(x + sqrt(x^2-1))
+    call fx_sv
+    call fx_sqr
+    ld hl,fxk_one
+    call fx_kb
+    call fx_sub
+    call fx_sqrt
+    ld hl,fx_v
+    call fx_kb
+    call fx_add
+    jp fx_ln
+fx_atanh:                       ; ln((1+x)/(1-x)) / 2
+    call fx_sv
+    ld hl,fxk_one
+    call fx_kb
+    call fx_add
+    call fx_st_t
+    call fx_one
+    ld hl,fx_v
+    call fx_kb
+    call fx_sub
+    call fx_ab
+    ld hl,fx_t
+    call fx_lda
+    call fx_div
+    call fx_ln
+    jp fx_halve
+
+; ---- power ---------------------------------------------------------------------------------------------------
+; FA = FA ^ FB
+fx_pow:
+    ld a,(fx_b)
+    or a
+    jp z,fx_one                 ; x^0 = 1
+    ld a,(fx_a)
+    or a
+    jr nz,fx_pw1
+    ld a,(fx_b+1)
+    or a
+    jp nz,fx_dz                 ; 0^negative
+    ret                         ; 0^positive = 0
+fx_pw1:
+    ld hl,fx_b
+    ld de,fx_c
+    ld bc,6
+    ldir                        ; fx_c = y
+    ld hl,fx_a
+    ld de,fx_d
+    ld bc,6
+    ldir                        ; fx_d = x
+    ld a,(fx_b)
+    cp 144
+    jp nc,fx_pw5                ; |y| huge: only exp/ln can handle it
+    call fx_ba                  ; FA = y
+    call fx_trunc
+    ld hl,fx_c
+    call fx_kb
+    call fx_cmp
+    jp nz,fx_pw5
+    ; integer exponent: binary powering with |n|
+    ld hl,fx_c
+    call fx_lda
+    call fx_abs
+    call fx_to_i16
+    jr c,fx_pw5
+    ld a,(fx_c+1)
+    ld (fx_flag),a
+    ld (fx_ptr),hl
+    call fx_one
+    ld hl,fx_a
+    ld de,fx_e
+    ld bc,6
+    ldir                        ; result = 1
+fx_pw2:
+    ld hl,(fx_ptr)
+    ld a,h
+    or l
+    jr z,fx_pw4
+    srl h
+    rr l
+    ld (fx_ptr),hl
+    jr nc,fx_pw3
+    ld hl,fx_e
+    call fx_lda
+    ld hl,fx_d
+    call fx_kb
+    call fx_mul
+    ld hl,fx_a
+    ld de,fx_e
+    ld bc,6
+    ldir
+fx_pw3:
+    ld hl,(fx_ptr)
+    ld a,h
+    or l
+    jr z,fx_pw4
+    ld hl,fx_d
+    call fx_lda
+    call fx_ab
+    call fx_mul
+    ld hl,fx_a
+    ld de,fx_d
+    ld bc,6
+    ldir
+    jr fx_pw2
+fx_pw4:
+    ld hl,fx_e
+    call fx_lda
+    ld a,(fx_flag)
+    or a
+    ret z
+    call fx_ab
+    call fx_one
+    jp fx_div                   ; negative exponent
+fx_pw5:
+    ld hl,fx_d
+    call fx_lda
+    ld a,(fx_a+1)
+    or a
+    jp nz,fx_domain             ; negative base with a non-integer exponent
+    call fx_ln
+    ld hl,fx_c
+    call fx_kb
+    call fx_mul
+    jp fx_exp
+
+; ---- factorial (integer 0..33) and modulo ------------------------------------------------------------------------
+fx_fact:
+    ld a,(fx_a+1)
+    or a
+    jp nz,fx_domain
+    call fx_to_i16
+    jp c,fx_over
+    ld a,h
+    or a
+    jp nz,fx_over
+    ld a,l
+    cp 34
+    jp nc,fx_over
+    ld (fx_flag),a
+    call fx_one
+    ld hl,fx_a
+    ld de,fx_e
+    ld bc,6
+    ldir
+    ld a,2
+    ld (fx_flag2),a
+fx_f1:
+    ld a,(fx_flag)
+    ld b,a
+    ld a,(fx_flag2)
+    cp b
+    jr z,fx_f2
+    jr nc,fx_f3
+fx_f2:
+    ld l,a
+    ld h,0
+    call fx_from_i16
+    ld hl,fx_e
+    call fx_kb
+    call fx_mul
+    ld hl,fx_a
+    ld de,fx_e
+    ld bc,6
+    ldir
+    ld hl,fx_flag2
+    inc (hl)
+    jr fx_f1
+fx_f3:
+    ld hl,fx_e
+    jp fx_lda
+
+fx_mod:                         ; FA = FA - FB * floor(FA / FB)
+    ld hl,fx_a
+    ld de,fx_c
+    ld bc,6
+    ldir
+    ld hl,fx_b
+    ld de,fx_d
+    ld bc,6
+    ldir
+    call fx_div
+    ld a,(fx_err)
+    or a
+    ret nz
+    call fx_floor
+    ld hl,fx_d
+    call fx_kb
+    call fx_mul
+    call fx_ab
+    ld hl,fx_c
+    call fx_lda
+    jp fx_sub

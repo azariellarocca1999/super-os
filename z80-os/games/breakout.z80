@@ -1,0 +1,481 @@
+; =============================================================================
+; BREAKOUT (native).  8 x 5 bricks, a paddle that bends the ball's angle, three lives, levels that get faster.
+;   LEFT / RIGHT move the paddle (held = faster), 2ND / ENTER / ALPHA launch the ball, MODE / CLEAR pause.
+; =============================================================================
+bk_px       .equ GV+0           ; paddle left edge
+bk_bx       .equ GV+1           ; ball top-left (2x2)
+bk_by       .equ GV+2
+bk_vx       .equ GV+3           ; signed, pixels per frame
+bk_vy       .equ GV+4
+bk_lives    .equ GV+5
+bk_level    .equ GV+6
+bk_stuck    .equ GV+7           ; 1: the ball sits on the paddle
+bk_left     .equ GV+8           ; bricks left
+bk_score    .equ GV+9           ; 16-bit
+bk_pw       .equ GV+11          ; paddle width
+bk_step     .equ GV+12
+bk_hold     .equ GV+13          ; frames the paddle key has been held
+bk_row      .equ GV+14
+bk_col      .equ GV+15
+bk_bricks   .equ GV+32          ; 40 bytes, 1 = alive
+BK_PY       .equ 60
+
+game_breakout:
+    ld a,3
+    ld b,4
+    call gl_init
+bk_restart:
+    ld hl,0
+    ld (bk_score),hl
+    ld a,3
+    ld (bk_lives),a
+    xor a
+    ld (bk_level),a
+    call bk_newlevel
+bk_loop:
+    call gl_tick
+    ld a,(gl_press)
+    and GK_Q|GK_P
+    jr z,bk_nop
+    call gl_pause
+    jr c,bk_quit
+bk_nop:
+    call bk_paddle
+    ld a,(bk_stuck)
+    or a
+    jr z,bk_play
+    ld a,(bk_px)                ; ball rides the paddle
+    ld hl,bk_pw
+    ld c,(hl)
+    srl c
+    add a,c
+    dec a
+    ld (bk_bx),a
+    ld a,BK_PY-3
+    ld (bk_by),a
+    ld a,(gl_press)
+    and GK_A|GK_B|GK_U
+    jr z,bk_draw
+    xor a
+    ld (bk_stuck),a
+    call gl_rnd
+    and 1
+    ld a,1
+    jr z,bk_lr
+    ld a,$FF
+bk_lr:
+    ld (bk_vx),a
+    ld a,(bk_level)
+    cp 2
+    ld a,$FE                    ; vy = -2, -3 from level 3 on
+    jr c,bk_sv
+    ld a,$FD
+bk_sv:
+    ld (bk_vy),a
+    jr bk_draw
+bk_play:
+    call bk_ball
+    ld a,(bk_lives)
+    or a
+    jr z,bk_over
+    ld a,(bk_left)
+    or a
+    jr nz,bk_draw
+    ld a,(bk_level)             ; cleared: next level
+    inc a
+    ld (bk_level),a
+    call bk_newlevel
+bk_draw:
+    ld hl,bk_px                 ; nothing moved (ball stuck, paddle idle): no redraw, no LCD traffic
+    ld b,16
+    call gl_changed
+    jr z,bk_loop
+    call bk_render
+    call gl_flush
+    jr bk_loop
+bk_quit:
+    jp gl_exit
+bk_over:
+    call bk_render
+    call gl_flush
+    ld hl,(bk_score)
+    call gl_gameover
+    jr c,bk_quit
+    jp bk_restart
+
+bk_newlevel:                    ; all bricks, paddle in the middle, ball on the paddle
+    ld hl,bk_bricks
+    ld de,bk_bricks+1
+    ld bc,39
+    ld (hl),1
+    ldir
+    ld a,40
+    ld (bk_left),a
+    ld a,(bk_level)
+    ld b,16
+    cp 3
+    jr c,bkn_w
+    ld b,12                     ; narrower paddle from level 4
+bkn_w:
+    ld a,b
+    ld (bk_pw),a
+    ld a,40
+    ld (bk_px),a
+    ld a,1
+    ld (bk_stuck),a
+    xor a
+    ld (bk_hold),a
+    ret
+
+bk_paddle:
+    ld a,(gl_held)
+    and GK_L|GK_R
+    jr nz,bkp_h
+    xor a
+    ld (bk_hold),a
+    ret
+bkp_h:
+    ld a,(bk_hold)
+    inc a
+    ld (bk_hold),a
+    ld b,3                      ; 3 px per frame, 5 after half a second of holding
+    cp 12
+    jr c,bkp_m
+    ld b,5
+bkp_m:
+    ld a,(gl_held)
+    and GK_L
+    ld a,(bk_px)
+    jr z,bkp_r
+    sub b                       ; left
+    jr nc,bkp_s
+    xor a
+    jr bkp_s
+bkp_r:
+    add a,b
+    ld c,a
+    ld a,96
+    ld hl,bk_pw
+    sub (hl)
+    cp c
+    ld a,c
+    jr nc,bkp_s
+    ld a,96
+    ld hl,bk_pw
+    sub (hl)
+bkp_s:
+    ld (bk_px),a
+    ret
+
+; ---- ball ----------------------------------------------------------------------------------------------------------------
+bk_ball:
+    ld a,(bk_vx)
+    call bk_absstep
+    or a
+    jr z,bkb_y
+bkb_xl:
+    push af
+    ld a,(bk_bx)
+    ld hl,bk_step
+    add a,(hl)
+    ld (bk_bx),a
+    cp 94
+    jr c,bkb_xok                ; (negative wraps to 255: also caught here)
+    ld a,(bk_step)
+    neg
+    ld hl,bk_bx
+    add a,(hl)
+    ld (hl),a
+    ld a,(bk_vx)
+    neg
+    ld (bk_vx),a
+    pop af
+    jr bkb_y
+bkb_xok:
+    call bk_brick
+    pop af
+    dec a
+    jr nz,bkb_xl
+bkb_y:
+    ld a,(bk_vy)
+    call bk_absstep
+    or a
+    ret z
+bkb_yl:
+    push af
+    ld a,(bk_by)
+    ld hl,bk_step
+    add a,(hl)
+    ld (bk_by),a
+    cp 8
+    jr nc,bkb_top
+    ld a,8
+    ld (bk_by),a
+    ld a,(bk_vy)
+    neg
+    ld (bk_vy),a
+    pop af
+    ret
+bkb_top:
+    cp 62
+    jr nc,bkb_lost
+    ld a,(bk_vy)                ; paddle: only while travelling down, ball bottom on the paddle top
+    bit 7,a
+    jr nz,bkb_br
+    ld a,(bk_by)
+    cp BK_PY-1
+    jr c,bkb_br
+    cp BK_PY+1
+    jr nc,bkb_br
+    ld a,(bk_px)
+    ld b,a
+    ld a,(bk_bx)
+    inc a
+    cp b
+    jr c,bkb_br                 ; right edge of the ball left of the paddle
+    ld a,(bk_pw)
+    add a,b
+    ld c,a
+    ld a,(bk_bx)
+    cp c
+    jr nc,bkb_br                ; left edge right of the paddle
+    ld a,(bk_vy)                ; reflect upwards, angle from the hit position
+    neg
+    ld (bk_vy),a
+    ld a,(bk_bx)
+    sub b
+    jr nc,bkb_hp
+    xor a
+bkb_hp:
+    srl a                       ; 0..8 for a 16-wide paddle (0..6 for 12)
+    cp 9
+    jr c,bkb_ix
+    ld a,8
+bkb_ix:
+    ld e,a
+    ld d,0
+    ld hl,bk_angle
+    add hl,de
+    ld a,(hl)
+    ld (bk_vx),a
+    pop af
+    ret
+bkb_br:
+    call bk_brick
+    pop af
+    dec a
+    jr nz,bkb_yl
+    ret
+bkb_lost:
+    pop af
+    ld a,(bk_lives)
+    dec a
+    ld (bk_lives),a
+    ld a,1
+    ld (bk_stuck),a
+    ret
+bk_angle: .db $FE,$FE,$FF,$FF,1,1,1,2,2
+
+bk_absstep:                     ; A = signed v -> A = |v|, bk_step = +1 / -1
+    bit 7,a
+    jr z,bka_p
+    neg
+    ld b,a
+    ld a,$FF
+    ld (bk_step),a
+    ld a,b
+    ret
+bka_p:
+    ld b,a
+    ld a,1
+    ld (bk_step),a
+    ld a,b
+    ret
+
+bk_brick:                       ; the ball centre inside a brick?  kill it, reflect, score
+    ld a,(bk_by)
+    inc a
+    sub 10
+    ret c
+    cp 25
+    ret nc
+    ld c,0                      ; row = (y - 10) / 5, remainder must be < 4
+bkr_d:
+    cp 5
+    jr c,bkr_ok
+    sub 5
+    inc c
+    jr bkr_d
+bkr_ok:
+    cp 4
+    ret nc
+    ld a,c
+    ld (bk_row),a
+    ld a,(bk_bx)
+    inc a
+    ld b,0                      ; col = x / 12, remainder must be < 11
+bkc_d:
+    cp 12
+    jr c,bkc_ok
+    sub 12
+    inc b
+    jr bkc_d
+bkc_ok:
+    cp 11
+    ret nc
+    ld a,b
+    ld (bk_col),a
+    ld a,(bk_row)               ; index = row * 8 + col
+    add a,a
+    add a,a
+    add a,a
+    ld hl,bk_col
+    add a,(hl)
+    ld e,a
+    ld d,0
+    ld hl,bk_bricks
+    add hl,de
+    ld a,(hl)
+    or a
+    ret z
+    ld (hl),0
+    ld a,(bk_left)
+    dec a
+    ld (bk_left),a
+    ld a,(bk_row)               ; top rows are worth more
+    ld c,a
+    ld a,5
+    sub c
+    ld c,a
+    add a,a
+    add a,a
+    add a,c
+    add a,a                     ; 10 * (5 - row)
+    ld e,a
+    ld d,0
+    ld hl,(bk_score)
+    add hl,de
+    ld (bk_score),hl
+    ld a,(bk_vy)
+    neg
+    ld (bk_vy),a
+    ret
+
+; ---- drawing -------------------------------------------------------------------------------------------------------------
+bk_render:
+    call S_GFX_CLEAR
+    ld hl,bk_l_sc
+    call gl_lang
+    ld b,0
+    ld c,1
+    call gl_text
+    ld hl,(bk_score)
+    ld b,6
+    ld c,1
+    call gl_num
+    ld hl,bk_l_li
+    call gl_lang
+    ld b,11
+    ld c,1
+    call gl_text
+    ld a,(bk_lives)
+    ld l,a
+    ld h,0
+    ld b,17
+    ld c,1
+    call gl_num
+    ld hl,bk_l_lv
+    call gl_lang
+    ld b,19
+    ld c,1
+    call gl_text
+    ld a,(bk_level)
+    inc a
+    ld l,a
+    ld h,0
+    ld b,22
+    ld c,1
+    call gl_num
+    ld b,0
+    ld c,7
+    ld d,96
+    ld e,1
+    ld a,1
+    call gl_rect
+    xor a                       ; bricks
+    ld (bk_row),a
+bkd_r:
+    xor a
+    ld (bk_col),a
+bkd_c:
+    ld a,(bk_row)
+    add a,a
+    add a,a
+    add a,a
+    ld hl,bk_col
+    add a,(hl)
+    ld e,a
+    ld d,0
+    ld hl,bk_bricks
+    add hl,de
+    ld a,(hl)
+    or a
+    jr z,bkd_n
+    ld a,(bk_col)               ; x = col * 12
+    ld b,a
+    add a,a
+    add a,b
+    add a,a
+    add a,a
+    ld b,a
+    ld a,(bk_row)               ; y = 10 + row * 5
+    ld c,a
+    add a,a
+    add a,a
+    add a,c
+    add a,10
+    ld c,a
+    ld d,11
+    ld e,4
+    ld a,1
+    call gl_rect
+    ld a,(bk_row)               ; odd rows are outlined
+    and 1
+    jr z,bkd_n
+    inc b
+    inc c
+    ld d,9
+    ld e,2
+    xor a
+    call gl_rect
+bkd_n:
+    ld a,(bk_col)
+    inc a
+    ld (bk_col),a
+    cp 8
+    jr nz,bkd_c
+    ld a,(bk_row)
+    inc a
+    ld (bk_row),a
+    cp 5
+    jr nz,bkd_r
+    ld a,(bk_px)                ; paddle
+    ld b,a
+    ld c,BK_PY
+    ld a,(bk_pw)
+    ld d,a
+    ld e,2
+    ld a,1
+    call gl_rect
+    ld a,(bk_bx)                ; ball
+    ld b,a
+    ld a,(bk_by)
+    ld c,a
+    ld d,2
+    ld e,2
+    ld a,1
+    jp gl_rect
+
+bk_l_sc: .db "PTS",0,"PTS",0
+bk_l_li: .db "VIDAS",0,"LIVES",0
+bk_l_lv: .db "NIV",0,"LVL",0

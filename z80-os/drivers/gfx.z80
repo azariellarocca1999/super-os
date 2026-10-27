@@ -1,0 +1,554 @@
+; =============================================================================
+; Software graphics on GBUF1 (96x64, 1 bpp, 12 bytes/row).  Dual font engine:
+;   4x6 cells  (3x5 glyph)  24 columns x 10 lines   -- nibble aligned, no shifting
+;   6x8 cells  (5x7 glyph)  16 columns x  8 lines   -- bit-shifted into 16-bit pairs
+; ZOOM / font_toggle switches v_font; the status bar always uses the 3x5 font.
+; Glyph tables live in RAM (FONT3 / FONT5), copied from flash page 2 at boot.
+; =============================================================================
+
+font_toggle:
+    ld a,(v_font)
+    xor 1
+set_font:
+    ld (v_font),a
+    ld (s_font),a
+    ret
+
+gfx_clear:
+    push bc
+    push de
+    push hl
+    ld hl,GBUF1
+    ld de,GBUF1+1
+    ld bc,767
+    ld (hl),0
+    ldir
+    pop hl
+    pop de
+    pop bc
+    ret
+
+gfx_addr:                       ; B = x byte (0..11), C = y  ->  HL = &GBUF1[y*12+x]  (clobbers DE, A)
+    ld l,c
+    ld h,0
+    add hl,hl
+    add hl,hl
+    ld d,h
+    ld e,l
+    add hl,hl
+    add hl,de                   ; y*12
+    ld e,b
+    ld d,0
+    add hl,de
+    ld de,GBUF1
+    add hl,de
+    ret
+
+fold_char:                      ; A = ASCII -> A = glyph index 0..63 (lower case folded, others = space)
+    cp 96
+    jr c,fold_char_u
+    sub 32
+fold_char_u:
+    sub 32
+    jr nc,fold_char_g
+    xor a
+fold_char_g:
+    cp 64
+    ret c
+    xor a
+    ret
+
+; ---- 4x6 glyph (3x5) --------------------------------------------------------------------------------
+; B = column (0..23)  C = y pixel  A = ASCII
+putchar3:
+    push af
+    push bc
+    push de
+    push hl
+    push ix
+    call fold_char
+    ld l,a
+    ld h,0
+    ld e,l
+    ld d,h
+    add hl,hl
+    add hl,hl
+    add hl,de                   ; *5
+    ld de,FONT3
+    add hl,de
+    push hl
+    pop ix
+    ld a,b
+    and 1
+    ld (v_tmp1),a               ; odd column?
+    srl b
+    call gfx_addr
+    ld c,6
+putchar3_row:
+    ld a,c
+    cp 1
+    jr nz,putchar3_ld
+    xor a                       ; 6th line is the blank gap
+    jr putchar3_gl
+putchar3_ld:
+    ld a,(ix+0)
+    inc ix
+putchar3_gl:
+    ld b,a
+    ld a,(v_invert)
+    xor b
+    ld b,a
+    ld a,(v_tmp1)
+    or a
+    ld a,b
+    jr z,putchar3_even
+    rrca
+    rrca
+    rrca
+    rrca
+    and $0F
+    ld b,a
+    ld a,(hl)
+    and $F0
+    or b
+    jr putchar3_st
+putchar3_even:
+    and $F0
+    ld b,a
+    ld a,(hl)
+    and $0F
+    or b
+putchar3_st:
+    ld (hl),a
+    ld de,12
+    add hl,de
+    dec c
+    jr nz,putchar3_row
+    pop ix
+    pop hl
+    pop de
+    pop bc
+    pop af
+    ret
+
+; ---- 6x8 glyph (5x7) --------------------------------------------------------------------------------
+; B = column (0..15)  C = y pixel  A = ASCII
+putchar5:
+    push af
+    push bc
+    push de
+    push hl
+    push ix
+    call fold_char
+    ld l,a
+    ld h,0
+    ld d,h
+    ld e,l
+    add hl,hl
+    add hl,hl
+    add hl,hl                   ; *8
+    or a
+    sbc hl,de                   ; *7
+    ld de,FONT5
+    add hl,de
+    push hl
+    pop ix
+    ld a,b                      ; x = col*6
+    add a,a
+    ld e,a
+    add a,a
+    add a,e
+    ld e,a
+    and 7
+    ld (v_tmp1),a               ; bit shift inside the byte
+    ld a,e
+    rrca
+    rrca
+    rrca
+    and $1F
+    ld b,a                      ; byte column
+    call gfx_addr
+    ld a,8
+    ld (v_tmp2),a               ; 7 glyph rows + 1 blank
+putchar5_row:
+    ld a,(v_tmp2)
+    cp 1
+    jr nz,putchar5_ld
+    xor a
+    jr putchar5_gl
+putchar5_ld:
+    ld a,(ix+0)
+    inc ix
+putchar5_gl:
+    ld d,a
+    ld a,(v_invert)
+    or a
+    jr z,putchar5_ni
+    ld a,d
+    xor $FC
+    ld d,a
+putchar5_ni:
+    ld e,0                      ; DE = pattern << 8
+    ld bc,$FC00                 ; BC = 6-pixel cell mask
+    ld a,(v_tmp1)
+    or a
+    jr z,putchar5_m
+putchar5_sh:
+    srl d
+    rr e
+    srl b
+    rr c
+    dec a
+    jr nz,putchar5_sh
+putchar5_m:
+    ld a,b
+    cpl
+    and (hl)
+    or d
+    ld (hl),a
+    inc hl
+    ld a,c
+    cpl
+    and (hl)
+    or e
+    ld (hl),a
+    ld de,11
+    add hl,de
+    ld a,(v_tmp2)
+    dec a
+    ld (v_tmp2),a
+    jr nz,putchar5_row
+    pop ix
+    pop hl
+    pop de
+    pop bc
+    pop af
+    ret
+
+putchar:
+    push af
+    ld a,(v_font)
+    or a
+    jr z,putchar_s
+    pop af
+    jp putchar5
+putchar_s:
+    pop af
+    jp putchar3
+
+puts:                           ; HL = zero-terminated string, B = col, C = y  (current font)
+    push af
+    push bc
+    push hl
+    ld a,(v_font)
+    or a
+    ld d,24
+    jr z,puts_l
+    ld d,16
+puts_l:
+    ld a,b
+    cp d
+    jr nc,puts_e
+    ld a,(hl)
+    or a
+    jr z,puts_e
+    push de
+    call putchar
+    pop de
+    inc hl
+    inc b
+    jr puts_l
+puts_e:
+    pop hl
+    pop bc
+    pop af
+    ret
+
+puts_small:                     ; always the 3x5 font
+    push af
+    push bc
+    push hl
+puts_small_l:
+    ld a,b
+    cp 24
+    jr nc,puts_small_e
+    ld a,(hl)
+    or a
+    jr z,puts_small_e
+    call putchar3
+    inc hl
+    inc b
+    jr puts_small_l
+puts_small_e:
+    pop hl
+    pop bc
+    pop af
+    ret
+
+; HL = value, B = col, C = y.  Prints unsigned decimal in the current font.
+print_u16:
+    push af
+    push bc
+    push de
+    push hl
+    push ix
+    push bc
+    ld ix,print_u16_pw
+    ld de,NUMBUF
+    xor a
+    ld (v_tmp2),a
+    ld b,5
+print_u16_nd:
+    push bc
+    ld c,(ix+0)
+    ld b,(ix+1)
+    inc ix
+    inc ix
+    xor a
+print_u16_sub:
+    or a
+    sbc hl,bc
+    jr c,print_u16_adds
+    inc a
+    jr print_u16_sub
+print_u16_adds:
+    add hl,bc
+    pop bc
+    ld c,a                      ; digit
+    ld a,(v_tmp2)
+    or c
+    jr nz,print_u16_emit
+    ld a,b
+    cp 1
+    jr nz,print_u16_skip        ; suppress leading zeros except the last digit
+print_u16_emit:
+    ld a,1
+    ld (v_tmp2),a
+    ld a,c
+    add a,'0'
+    ld (de),a
+    inc de
+print_u16_skip:
+    djnz print_u16_nd
+    xor a
+    ld (de),a
+    pop bc
+    ld hl,NUMBUF
+    call puts
+    pop ix
+    pop hl
+    pop de
+    pop bc
+    pop af
+    ret
+print_u16_pw: .dw 10000,1000,100,10,1
+
+; B = x byte, C = y, D = width (bytes), E = height (rows); XOR with $FF
+gfx_invert:
+    push af
+    push bc
+    push de
+    push hl
+    push de
+    call gfx_addr
+    pop de
+    ld b,e
+gfx_invert_r:
+    push hl
+    ld c,d
+gfx_invert_x:
+    ld a,(hl)
+    cpl
+    ld (hl),a
+    inc hl
+    dec c
+    jr nz,gfx_invert_x
+    pop hl
+    ld a,l
+    add a,12
+    ld l,a
+    jr nc,gfx_invert_n
+    inc h
+gfx_invert_n:
+    djnz gfx_invert_r
+    pop hl
+    pop de
+    pop bc
+    pop af
+    ret
+
+; B = x byte, C = y, D = width, E = height, A = value
+gfx_fill:
+    push af
+    push bc
+    push de
+    push hl
+    ld (v_tmp2),a
+    push de
+    call gfx_addr
+    pop de
+    ld b,e
+gfx_fill_r:
+    push hl
+    ld c,d
+    ld a,(v_tmp2)
+gfx_fill_x:
+    ld (hl),a
+    inc hl
+    dec c
+    jr nz,gfx_fill_x
+    pop hl
+    ld a,l
+    add a,12
+    ld l,a
+    jr nc,gfx_fill_n
+    inc h
+gfx_fill_n:
+    djnz gfx_fill_r
+    pop hl
+    pop de
+    pop bc
+    pop af
+    ret
+
+gfx_hline:                      ; C = y, A = byte pattern for the whole row
+    push af
+    push bc
+    push de
+    push hl
+    ld d,12
+    ld e,1
+    ld b,0
+    call gfx_fill
+    pop hl
+    pop de
+    pop bc
+    pop af
+    ret
+
+; ---- status bar (6 px): battery, %, CPU speed, ESP state, clock ---------------------------------
+status_draw:
+    push af
+    push bc
+    push de
+    push hl
+    ld b,0
+    ld c,0
+    ld d,12
+    ld e,6
+    xor a
+    call gfx_fill               ; clear rows 0..5
+    ; battery icon: 8x6 at x=0
+    ld a,(v_batlvl)             ; cached by the power task (0..3)
+    ld (v_tmp3),a
+    ld hl,status_fill
+    ld e,a
+    ld d,0
+    add hl,de
+    ld a,(hl)                   ; inner fill bits
+    ld d,a
+    ld hl,GBUF1
+    ld (hl),0                   ; row 0 blank
+    ld bc,12
+    add hl,bc
+    ld (hl),$7E                 ; row 1: top edge
+    add hl,bc
+    ld a,d
+    or $43                      ; row 2: walls + nub
+    ld (hl),a
+    add hl,bc
+    ld a,d
+    or $43
+    ld (hl),a                   ; row 3
+    add hl,bc
+    ld (hl),$7E                 ; row 4: bottom edge
+    ; percent text
+    ld a,(v_tmp3)
+    add a,a
+    ld e,a
+    ld d,0
+    ld hl,status_pct
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ex de,hl
+    ld b,2
+    ld c,0
+    call puts_small
+    ; speed
+    in a,(P_SPEED)
+    and 3
+    ld hl,status_15
+    jr nz,status_draw_sp
+    ld hl,status_6
+status_draw_sp:
+    ld b,6
+    ld c,0
+    call puts_small
+    ; ESP state
+    ld a,(v_esp)
+    add a,a
+    ld e,a
+    ld d,0
+    ld hl,status_esp
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ex de,hl
+    ld b,12
+    ld c,0
+    call puts_small
+    ; clock HH:MM
+    call rtc_get
+    ld a,h
+    ld (v_tmp0),a
+    ld a,l
+    ld (v_tmp1),a
+    ld hl,NUMBUF
+    ld a,(v_tmp0)
+    call status_2dig
+    ld (hl),':'
+    inc hl
+    ld a,(v_tmp1)
+    call status_2dig
+    ld (hl),0
+    ld hl,NUMBUF
+    ld b,19
+    ld c,0
+    call puts_small
+    pop hl
+    pop de
+    pop bc
+    pop af
+    ret
+
+status_2dig:                    ; A (0..99) -> two ASCII digits at (HL)+, HL advanced
+    ld b,'0'
+status_2dig_t:
+    cp 10
+    jr c,status_2dig_o
+    sub 10
+    inc b
+    jr status_2dig_t
+status_2dig_o:
+    ld (hl),b
+    inc hl
+    add a,'0'
+    ld (hl),a
+    inc hl
+    ret
+
+status_fill: .db %00000000,%00110000,%00111000,%00111100
+status_pct:  .dw sp_low,sp_40,sp_70,sp_100
+sp_low:  .db "LOW",0
+sp_40:   .db "40%",0
+sp_70:   .db "70%",0
+sp_100:  .db "100%",0
+status_15: .db "15MHZ",0
+status_6:  .db " 6MHZ",0
+status_esp: .dw se_zzz,se_esp,se_wifi
+se_zzz:  .db "ZZZ",0
+se_esp:  .db "ESP",0
+se_wifi: .db "WIFI",0

@@ -1,0 +1,127 @@
+; ---- shared UI helpers --------------------------------------------------------------------------
+ui_setlang:                     ; apply s_lang -> v_str
+    ld a,(s_lang)
+    or a
+    ld hl,str_table_es
+    jr z,ui_setlang_s
+    ld hl,str_table_en
+ui_setlang_s:
+    ld (v_str),hl
+    ret
+
+tr:                             ; HL = string id (STR_xxx) -> HL = pointer
+    ld de,(v_str)
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ex de,hl
+    ret
+
+ui_begin_id:                    ; HL = STR id
+    call tr
+    jp ui_begin
+
+; HL = STR id: show message centered-ish, wait for a key
+ui_message:
+    push hl
+    ld hl,STR_APP_INFO
+    call tr
+    call ui_begin
+    pop hl
+    call tr
+    ld b,1
+    ld c,26
+    call S_PUTS
+    ld hl,STR_PRESSKEY
+    call tr
+    ld b,1
+    ld c,50
+    call S_PUTS_SMALL
+    jp ui_wait_any
+
+; ---- unexpected-reset report (see the crash trail in the ISR) -----------------------------------------------------
+ui_crashreport:                 ; shown once after an unexpected restart: where the CPU was
+    ld a,(v_crash)
+    or a
+    ret z
+    xor a
+    ld (v_crash),a
+    ld hl,STR_CRASH_T
+    call tr
+    call ui_begin
+    ld hl,STR_CRASH_1
+    call tr
+    ld b,1
+    ld c,16
+    call S_PUTS
+    ld hl,STR_CRASH_2
+    call tr
+    ld b,1
+    ld c,28
+    call S_PUTS
+    ld de,INBUF
+    ld a,'P'
+    ld (de),a
+    inc de
+    ld a,'C'
+    ld (de),a
+    inc de
+    ld a,'='
+    ld (de),a
+    inc de
+    ld hl,(v_cpc)
+    call ui_hex16
+    ld a,' '
+    ld (de),a
+    inc de
+    ld a,'S'
+    ld (de),a
+    inc de
+    ld a,'P'
+    ld (de),a
+    inc de
+    ld a,'='
+    ld (de),a
+    inc de
+    ld hl,(v_csp)
+    call ui_hex16
+    xor a
+    ld (de),a
+    ld hl,INBUF
+    ld b,1
+    ld c,38
+    call S_PUTS
+    ld hl,STR_PRESSKEY
+    call tr
+    ld b,1
+    ld c,54
+    call S_PUTS_SMALL
+    jp ui_wait_any
+
+ui_hex16:                       ; HL -> 4 hex digits at (DE), DE advanced
+    ld a,h
+    call ui_hex8
+    ld a,l
+ui_hex8:
+    push af
+    rrca
+    rrca
+    rrca
+    rrca
+    call ui_hexn
+    pop af
+ui_hexn:
+    and 15
+    add a,'0'
+    cp '9'+1
+    jr c,ui_hexn_s
+    add a,7
+ui_hexn_s:
+    ld (de),a
+    inc de
+    ret
+
+ui_mem_reset:                   ; apps that borrowed other RAM pages call this before returning
+    xor a
+    jp S_RAM_PAGE

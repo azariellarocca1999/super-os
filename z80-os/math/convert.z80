@@ -1,0 +1,273 @@
+; =============================================================================
+; convert.z80 -- universal unit converter (12 categories, 84 units; temperature uses factor + offset).
+; unit record (20 bytes): name[8] factor[6] offset[6];   base = value * factor + offset
+; =============================================================================
+conv_main:
+    ld (m_sp),sp
+    ld sp,MSTACK
+    call m_init
+    ld a,(v_font)
+    ld (m_oldfont),a
+    xor a
+    ld (v_font),a
+    ld a,(v_mode)
+    ld (m_oldmode),a
+    xor a
+    call S_SET_MODE
+    xor a
+    ld (ed_menu),a
+cv_catloop:
+    ld hl,lm_ptrs               ; category names (translated) -> pointer table
+    ld b,0
+cv_c1:
+    push hl
+    push bc
+    ld a,b
+    add a,a
+    ld l,a
+    ld h,0
+    ld de,MS_CAT0
+    add hl,de
+    call m_tr                   ; HL = text
+    pop bc
+    pop de                      ; DE = table slot
+    ex de,hl
+    ld (hl),e
+    inc hl
+    ld (hl),d
+    inc hl
+    inc b
+    ld a,b
+    cp 12
+    jr c,cv_c1
+    ld hl,MS_CV_TITLE
+    call m_tr
+    ex de,hl
+    ld hl,lm_ptrs
+    ld b,12
+    call lm_menu
+    cp $FF
+    jr z,cv_exit
+    ld (cv_cat),a
+    xor a
+    ld (cv_from),a
+    ld a,1
+    ld (cv_to),a
+    ld hl,fxk_one
+    ld de,cv_val
+    ld bc,6
+    ldir
+    call cv_setunits
+cv_screen:
+    call cv_compute
+    call cv_draw
+    call S_LCD_BLIT
+    call S_WAIT_KEY
+    cp K_CLEAR
+    jr z,cv_catloop
+    cp K_1
+    jr z,cv_pickfrom
+    cp K_2
+    jr z,cv_pickto
+    cp K_3
+    jr z,cv_value
+    cp K_4
+    jr z,cv_swap
+    cp K_ENTER
+    jr z,cv_value
+    jr cv_screen
+cv_exit:
+    ld a,(m_oldfont)
+    ld (v_font),a
+    ld a,(m_oldmode)
+    call S_SET_MODE
+    ld sp,(m_sp)
+    ret
+cv_swap:
+    ld a,(cv_from)
+    ld b,a
+    ld a,(cv_to)
+    ld (cv_from),a
+    ld a,b
+    ld (cv_to),a
+    jr cv_screen
+cv_pickfrom:
+    call cv_unitmenu
+    cp $FF
+    jr z,cv_screen
+    ld (cv_from),a
+    jr cv_screen
+cv_pickto:
+    call cv_unitmenu
+    cp $FF
+    jr z,cv_screen
+    ld (cv_to),a
+    jr cv_screen
+cv_value:
+    ld hl,cv_val
+    call fx_lda
+    ld hl,MS_CV_VALUE
+    call m_tr
+    call gr_prompt
+    jr c,cv_screen
+    ld de,cv_val
+    call fx_sta
+    jr cv_screen
+
+cv_setunits:                    ; cv_ptr / cv_cnt of the current category (cv_cats entries: .dw ptr, .db count, .db 0)
+    ld a,(cv_cat)
+    add a,a
+    add a,a
+    ld l,a
+    ld h,0
+    ld de,cv_cats
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    inc hl
+    ld a,(hl)
+    ld (cv_cnt),a
+    ld (cv_ptr),de
+    ret
+
+cv_unitptr:                     ; A = unit index -> HL = record
+    ld l,a
+    ld h,0
+    ld d,h
+    ld e,l
+    add hl,hl
+    add hl,hl
+    add hl,de                   ; *5
+    add hl,hl
+    add hl,hl                   ; *20
+    ld de,(cv_ptr)
+    add hl,de
+    ret
+
+cv_unitmenu:                    ; -> A = chosen unit or $FF
+    ld hl,lm_ptrs
+    ld b,0
+cvu1:
+    push hl
+    push bc
+    ld a,b
+    call cv_unitptr
+    pop bc
+    pop de
+    ex de,hl
+    ld (hl),e
+    inc hl
+    ld (hl),d
+    inc hl
+    inc b
+    ld a,(cv_cnt)
+    cp b
+    jr nz,cvu1
+    ld a,(cv_cat)
+    add a,a
+    ld l,a
+    ld h,0
+    ld de,MS_CAT0
+    add hl,de
+    call m_tr
+    ex de,hl
+    ld hl,lm_ptrs
+    ld a,(cv_cnt)
+    ld b,a
+    jp lm_menu
+
+cv_compute:
+    ld hl,cv_val
+    call fx_lda
+    ld a,(cv_from)
+    call cv_unitptr
+    ld de,8
+    add hl,de
+    call fx_ldb
+    call fx_mul                 ; value * f1
+    ld a,(cv_from)
+    call cv_unitptr
+    ld de,14
+    add hl,de
+    call fx_ldb
+    call fx_add                 ; + o1  -> base unit
+    ld a,(cv_to)
+    call cv_unitptr
+    ld de,14
+    add hl,de
+    call fx_ldb
+    call fx_sub                 ; - o2
+    ld a,(cv_to)
+    call cv_unitptr
+    ld de,8
+    add hl,de
+    call fx_ldb
+    call fx_div                 ; / f2
+    ld de,cv_res
+    jp fx_sta
+
+cv_draw:
+    ld a,(cv_cat)
+    add a,a
+    ld l,a
+    ld h,0
+    ld de,MS_CAT0
+    add hl,de
+    call m_tr
+    call S_UI_BEGIN
+    ld a,8
+    ld (fx_ndig),a
+    ld hl,cv_val
+    call fx_lda
+    call fx_tostr
+    ld hl,fx_str
+    ld de,gr_tmpb
+    call gr_catstr
+    ld a,' '
+    ld (de),a
+    inc de
+    ld a,(cv_from)
+    push de
+    call cv_unitptr
+    pop de
+    call gr_catstr
+    xor a
+    ld (de),a
+    ld hl,gr_tmpb
+    ld b,0
+    ld c,18
+    call S_PUTS
+    ld hl,cv_res
+    call fx_lda
+    call fx_tostr
+    ld a,9
+    ld (fx_ndig),a
+    ld a,'='
+    ld de,gr_tmpb
+    ld (de),a
+    inc de
+    ld a,' '
+    ld (de),a
+    inc de
+    ld hl,fx_str
+    call gr_catstr
+    ld a,' '
+    ld (de),a
+    inc de
+    ld a,(cv_to)
+    push de
+    call cv_unitptr
+    pop de
+    call gr_catstr
+    xor a
+    ld (de),a
+    ld hl,gr_tmpb
+    ld b,0
+    ld c,30
+    call S_PUTS
+    ld hl,MS_CV_KEYS
+    call m_tr
+    ld b,0
+    ld c,56
+    jp S_PUTS

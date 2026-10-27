@@ -1,0 +1,862 @@
+; =============================================================================
+; CHIP-8 interpreter (no SCHIP).  Semantics identical to tools/chip8.py (the reference it is tested against).
+; CHIP-8 memory = RAM page 2 mapped at $C000 (address a -> $C000+a).  State lives in RAM page $81 at $A000.
+; =============================================================================
+C8_VH       .equ $A0
+c8_v        .equ $A000          ; V0..VF (256-aligned: V[x] = $A000+x)
+c8_stk      .equ $A020          ; 16 x 2 bytes
+c8_pc       .equ $A040
+c8_i        .equ $A042
+c8_sp       .equ $A044          ; byte offset into c8_stk (0..32)
+c8_dt       .equ $A045
+c8_st       .equ $A046
+c8_keys     .equ $A047          ; 16 bits, bit n = key n held
+c8_rng      .equ $A049
+c8_dirty    .equ $A04B
+c8_acc      .equ $A04C          ; 60 Hz timer accumulator (against the 108 Hz tick)
+c8_py       .equ $A04D
+c8_bx       .equ $A04E
+c8_sh       .equ $A04F
+c8_krow     .equ $A050          ; 8 bytes: raw key matrix (1 = pressed)
+c8_yield    .equ $A05A          ; set by Fx07: the game is waiting for the timer -> end of frame, show it
+c8_sub      .equ $A058          ; instruction counter inside a 60 Hz period (tests)
+c8_nr       .equ $A05B          ; ticks since the last picture was shown (mid-frame bursts are not shown)
+c8_disp     .equ $A100          ; 64x32 bits, 8 bytes per row
+
+c8_reset:                       ; clear the state; CHIP-8 memory must be cleared / loaded by the caller
+    ld hl,c8_v
+    ld de,c8_v+1
+    ld bc,$005F
+    ld (hl),0
+    ldir
+    ld hl,c8_disp
+    ld de,c8_disp+1
+    ld bc,255
+    ld (hl),0
+    ldir
+    ld hl,$0200
+    ld (c8_pc),hl
+    ld hl,$ACE1
+    ld (c8_rng),hl
+    ld a,1
+    ld (c8_dirty),a
+    ret
+
+c8_xptr:                        ; HL = &V[x]   (x = B & 15)
+    ld a,b
+    and $0F
+    ld l,a
+    ld h,C8_VH
+    ret
+c8_yptr:                        ; HL = &V[y]   (y = C >> 4)
+    ld a,c
+    rrca
+    rrca
+    rrca
+    rrca
+    and $0F
+    ld l,a
+    ld h,C8_VH
+    ret
+c8_skip:
+    ld hl,(c8_pc)
+    inc hl
+    inc hl
+    ld a,h
+    and $0F
+    ld h,a
+    ld (c8_pc),hl
+    ret
+
+c8_step:
+    ld hl,(c8_pc)
+    ld a,h
+    or $C0
+    ld h,a
+    ld b,(hl)
+    inc hl
+    ld c,(hl)
+    ld hl,(c8_pc)
+    inc hl
+    inc hl
+    ld a,h
+    and $0F
+    ld h,a
+    ld (c8_pc),hl
+    ld a,b
+    rrca
+    rrca
+    rrca
+    rrca
+    and $0F
+    add a,a
+    ld e,a
+    ld d,0
+    ld hl,c8_jt
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ex de,hl
+    jp (hl)
+
+c8_jt:
+    .dw c8_h0,c8_h1,c8_h2,c8_h3,c8_h4,c8_h5,c8_h6,c8_h7
+    .dw c8_h8,c8_h9,c8_hA,c8_hB,c8_hC,c8_hD,c8_hE,c8_hF
+c8_bits: .db 1,2,4,8,16,32,64,128
+
+c8_h0:
+    ld a,c
+    cp $E0
+    jr z,c8_cls
+    cp $EE
+    ret nz
+    ld a,(c8_sp)
+    or a
+    ret z
+    sub 2
+    ld (c8_sp),a
+    ld e,a
+    ld d,0
+    ld hl,c8_stk
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ld (c8_pc),de
+    ret
+c8_cls:
+    ld hl,c8_disp
+    ld de,c8_disp+1
+    ld bc,255
+    ld (hl),0
+    ldir
+    ld a,1
+    ld (c8_dirty),a
+    ret
+c8_h1:
+    ld a,b
+    and $0F
+    ld d,a
+    ld e,c
+    ld (c8_pc),de
+    ret
+c8_h2:
+    ld a,(c8_sp)
+    cp 32
+    ret nc
+    ld e,a
+    ld d,0
+    ld hl,c8_stk
+    add hl,de
+    ld de,(c8_pc)
+    ld (hl),e
+    inc hl
+    ld (hl),d
+    ld a,(c8_sp)
+    add a,2
+    ld (c8_sp),a
+    jr c8_h1
+c8_h3:
+    call c8_xptr
+    ld a,(hl)
+    cp c
+    ret nz
+    jp c8_skip
+c8_h4:
+    call c8_xptr
+    ld a,(hl)
+    cp c
+    ret z
+    jp c8_skip
+c8_h5:
+    call c8_yptr
+    ld d,(hl)
+    call c8_xptr
+    ld a,(hl)
+    cp d
+    ret nz
+    jp c8_skip
+c8_h9:
+    call c8_yptr
+    ld d,(hl)
+    call c8_xptr
+    ld a,(hl)
+    cp d
+    ret z
+    jp c8_skip
+c8_h6:
+    call c8_xptr
+    ld (hl),c
+    ret
+c8_h7:
+    call c8_xptr
+    ld a,(hl)
+    add a,c
+    ld (hl),a
+    ret
+c8_h8:
+    call c8_yptr
+    ld d,(hl)
+    call c8_xptr
+    ld a,c
+    and $0F
+    jr z,h8_0
+    cp 1
+    jr z,h8_1
+    cp 2
+    jr z,h8_2
+    cp 3
+    jr z,h8_3
+    cp 4
+    jr z,h8_4
+    cp 5
+    jr z,h8_5
+    cp 6
+    jr z,h8_6
+    cp 7
+    jr z,h8_7
+    cp $0E
+    ret nz
+    ld a,d                      ; 8xyE: Vx = Vy << 1, VF = old bit 7
+    add a,a
+    ld (hl),a
+    jr h8_vf
+h8_0:
+    ld (hl),d
+    ret
+h8_1:
+    ld a,(hl)
+    or d
+    ld (hl),a
+    ret
+h8_2:
+    ld a,(hl)
+    and d
+    ld (hl),a
+    ret
+h8_3:
+    ld a,(hl)
+    xor d
+    ld (hl),a
+    ret
+h8_4:
+    ld a,(hl)
+    add a,d
+    ld (hl),a
+    jr h8_vf
+h8_5:
+    ld a,(hl)
+    sub d
+    ld (hl),a
+    ccf
+    jr h8_vf
+h8_6:
+    ld a,d
+    srl a
+    ld (hl),a
+    jr h8_vf
+h8_7:
+    ld a,d
+    sub (hl)
+    ld (hl),a
+    ccf
+h8_vf:                          ; VF = carry
+    ld a,0
+    rla
+    ld (c8_v+15),a
+    ret
+c8_hA:
+    ld a,b
+    and $0F
+    ld d,a
+    ld e,c
+    ld (c8_i),de
+    ret
+c8_hB:
+    ld a,(c8_v)
+    ld l,a
+    ld h,0
+    ld a,b
+    and $0F
+    ld d,a
+    ld e,c
+    add hl,de
+    ld a,h
+    and $0F
+    ld h,a
+    ld (c8_pc),hl
+    ret
+c8_hC:
+    ld hl,(c8_rng)
+    ld e,8
+hc_l:
+    srl h
+    rr l
+    jr nc,hc_n
+    ld a,h
+    xor $B4
+    ld h,a
+hc_n:
+    dec e
+    jr nz,hc_l
+    ld (c8_rng),hl
+    ld a,l
+    and c
+    ld d,a
+    call c8_xptr
+    ld (hl),d
+    ret
+c8_hD:
+    call c8_yptr
+    ld a,(hl)
+    and 31
+    ld (c8_py),a
+    call c8_xptr
+    ld a,(hl)
+    and 63
+    ld e,a
+    and 7
+    ld (c8_sh),a
+    ld a,e
+    rrca
+    rrca
+    rrca
+    and 7
+    ld (c8_bx),a
+    xor a
+    ld (c8_v+15),a
+    ld a,1
+    ld (c8_dirty),a
+    ld a,c
+    and $0F
+    ret z
+    ld b,a
+    ld hl,(c8_i)
+    ld a,h
+    and $0F
+    or $C0
+    ld h,a
+drw_row:
+    ld a,(c8_py)
+    cp 32
+    ret nc
+    add a,a
+    add a,a
+    add a,a
+    ld e,a
+    ld a,(c8_bx)
+    add a,e
+    ld e,a
+    ld d,0
+    ld ix,c8_disp
+    add ix,de
+    ld a,(hl)
+    inc hl
+    push hl
+    ld h,a
+    ld l,0
+    ld a,(c8_sh)
+    or a
+    jr z,drw_ns
+    ld e,a
+drw_sh:
+    srl h
+    rr l
+    dec e
+    jr nz,drw_sh
+drw_ns:
+    ld a,(ix+0)
+    and h
+    jr z,drw_n1
+    ld a,1
+    ld (c8_v+15),a
+drw_n1:
+    ld a,(ix+0)
+    xor h
+    ld (ix+0),a
+    ld a,(c8_bx)
+    cp 7
+    jr z,drw_nx
+    ld a,(ix+1)
+    and l
+    jr z,drw_n2
+    ld a,1
+    ld (c8_v+15),a
+drw_n2:
+    ld a,(ix+1)
+    xor l
+    ld (ix+1),a
+drw_nx:
+    pop hl
+    ld a,(c8_py)
+    inc a
+    ld (c8_py),a
+    djnz drw_row
+    ret
+c8_hE:
+    call c8_xptr
+    ld a,(hl)
+    and 15
+    ld hl,c8_keys
+    cp 8
+    jr c,he1
+    inc hl
+    sub 8
+he1:
+    ld e,a
+    ld d,0
+    push hl
+    ld hl,c8_bits
+    add hl,de
+    ld d,(hl)
+    pop hl
+    ld a,(hl)
+    and d
+    ld d,a
+    ld a,c
+    cp $9E
+    jr z,he_skp
+    cp $A1
+    ret nz
+    ld a,d
+    or a
+    ret nz
+    jp c8_skip
+he_skp:
+    ld a,d
+    or a
+    ret z
+    jp c8_skip
+c8_hF:
+    ld a,c
+    cp $07
+    jr z,f07
+    cp $0A
+    jr z,f0a
+    cp $15
+    jr z,f15
+    cp $18
+    jr z,f18
+    cp $1E
+    jr z,f1e
+    cp $29
+    jr z,f29
+    cp $33
+    jr z,f33
+    cp $55
+    jp z,f55
+    cp $65
+    jp z,f65
+    ret
+f07:
+    call c8_xptr
+    ld a,(c8_dt)
+    ld (hl),a
+    ld a,1
+    ld (c8_yield),a
+    ret
+f0a:
+    ld hl,(c8_keys)
+    ld a,h
+    or l
+    jr z,f0a_w
+    ld e,0
+f0a_l:
+    bit 0,l
+    jr nz,f0a_f
+    srl h
+    rr l
+    inc e
+    jr f0a_l
+f0a_f:
+    call c8_xptr
+    ld (hl),e
+    ret
+f0a_w:                          ; no key yet: run this instruction again
+    ld hl,(c8_pc)
+    dec hl
+    dec hl
+    ld a,h
+    and $0F
+    ld h,a
+    ld (c8_pc),hl
+    ret
+f15:
+    call c8_xptr
+    ld a,(hl)
+    ld (c8_dt),a
+    ret
+f18:
+    call c8_xptr
+    ld a,(hl)
+    ld (c8_st),a
+    ret
+f1e:
+    call c8_xptr
+    ld e,(hl)
+    ld d,0
+    ld hl,(c8_i)
+    add hl,de
+    ld a,h
+    and $0F
+    ld h,a
+    ld (c8_i),hl
+    ret
+f29:
+    call c8_xptr
+    ld a,(hl)
+    and 15
+    ld e,a
+    add a,a
+    add a,a
+    add a,e
+    add a,$50
+    ld l,a
+    ld h,0
+    ld (c8_i),hl
+    ret
+f33:
+    call c8_xptr
+    ld d,(hl)
+    ld hl,(c8_i)
+    ld a,h
+    and $0F
+    or $C0
+    ld h,a
+    ld a,d
+    ld e,0
+f33h:
+    cp 100
+    jr c,f33t
+    sub 100
+    inc e
+    jr f33h
+f33t:
+    ld (hl),e
+    inc hl
+    ld e,0
+f33a:
+    cp 10
+    jr c,f33o
+    sub 10
+    inc e
+    jr f33a
+f33o:
+    ld (hl),e
+    inc hl
+    ld (hl),a
+    ret
+f55:
+    ld a,b
+    and $0F
+    inc a
+    ld c,a
+    ld b,0
+    push bc
+    ld hl,(c8_i)
+    ld a,h
+    and $0F
+    or $C0
+    ld d,a
+    ld e,l
+    ld hl,c8_v
+    ldir
+    jr f5x
+f65:
+    ld a,b
+    and $0F
+    inc a
+    ld c,a
+    ld b,0
+    push bc
+    ld hl,(c8_i)
+    ld a,h
+    and $0F
+    or $C0
+    ld h,a
+    ld de,c8_v
+    ldir
+f5x:
+    pop bc
+    ld hl,(c8_i)
+    add hl,bc
+    ld a,h
+    and $0F
+    ld h,a
+    ld (c8_i),hl
+    ret
+
+; ---- 60 Hz timers (call once per 60 Hz period) -------------------------------------------------------------------
+c8_timers:
+    ld a,(c8_dt)
+    or a
+    jr z,ct1
+    dec a
+    ld (c8_dt),a
+ct1:
+    ld a,(c8_st)
+    or a
+    ret z
+    dec a
+    ld (c8_st),a
+    ret
+
+; ---- run BC instructions with a timer tick every 12th (deterministic; used by the tests) ----------------------------------
+c8_run_n:
+    push bc
+    call c8_step
+    pop bc
+    ld a,(c8_sub)
+    inc a
+    cp 12
+    jr c,crn_s
+    xor a
+    push af
+    push bc
+    call c8_timers
+    pop bc
+    pop af
+crn_s:
+    ld (c8_sub),a
+    dec bc
+    ld a,b
+    or c
+    jr nz,c8_run_n
+    ret
+
+; ---- keys: calculator matrix -> CHIP-8 keypad (table generated by tools/gen_c8.py) ----------------------------------------
+c8_scankeys:                    ; fills c8_krow (pressed = 1) and c8_keys; A = non-zero when CLEAR is held
+    ld hl,c8_krow
+    ld d,%11111110
+    ld c,0
+csk_r:
+    ld a,d
+    out (P_KEYS),a
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    in a,(P_KEYS)
+    cpl
+    ld (hl),a
+    inc hl
+    rlc d
+    inc c
+    ld a,c
+    cp 7
+    jr nz,csk_r
+    ld a,$FF
+    out (P_KEYS),a
+    ld hl,0
+    ld ix,c8_keytab
+csk_t:
+    ld a,(ix+0)
+    cp $FF
+    jr z,csk_d
+    ld e,a
+    ld d,0
+    push hl
+    ld hl,c8_krow
+    add hl,de
+    ld a,(hl)
+    pop hl
+    and (ix+1)
+    jr z,csk_n
+    ld a,(ix+2)                 ; chip key number -> bit in HL
+    push hl
+    ld e,a
+    ld d,0
+    cp 8
+    jr c,csk_lo
+    sub 8
+    ld e,a
+    ld hl,c8_bits
+    add hl,de
+    ld a,(hl)
+    pop hl
+    or h
+    ld h,a
+    jr csk_n
+csk_lo:
+    ld hl,c8_bits
+    add hl,de
+    ld a,(hl)
+    pop hl
+    or l
+    ld l,a
+csk_n:
+    inc ix
+    inc ix
+    inc ix
+    jr csk_t
+csk_d:
+    ld (c8_keys),hl
+    ld a,(c8_krow+1)            ; CLEAR = code 15 -> row 1, bit 6
+    and %01000000
+    ret
+
+; ---- LCD: 64x32 doubled vertically into the 96x64 frame buffer, 16 px margins ---------------------------------------------
+c8_render:
+    ld hl,c8_disp
+    ld de,GBUF1
+    ld b,32
+cr_r:
+    push bc
+    xor a
+    ld (de),a
+    inc de
+    ld (de),a
+    inc de
+    ld bc,8
+    ldir
+    xor a
+    ld (de),a
+    inc de
+    ld (de),a
+    inc de
+    push hl
+    ld hl,-12
+    add hl,de
+    ld bc,12
+    ldir                        ; second copy of the row (DE already continues)
+    pop hl
+    pop bc
+    djnz cr_r
+    ld a,(c8_st)                ; "sound" marker in the left margin
+    or a
+    ret z
+    ld a,$FF
+    ld (GBUF1),a
+    ld (GBUF1+12),a
+    ret
+
+c8_font:
+    .db $F0,$90,$90,$90,$F0,$20,$60,$20,$20,$70,$F0,$10,$F0,$80,$F0,$F0,$10,$F0,$10,$F0
+    .db $90,$90,$F0,$10,$10,$F0,$80,$F0,$10,$F0,$F0,$80,$F0,$90,$F0,$F0,$10,$20,$40,$40
+    .db $F0,$90,$F0,$90,$F0,$F0,$90,$F0,$10,$F0,$F0,$90,$F0,$90,$90,$E0,$90,$E0,$90,$E0
+    .db $F0,$80,$80,$80,$F0,$E0,$90,$90,$90,$E0,$F0,$80,$F0,$80,$F0,$F0,$80,$F0,$80,$80
+
+; ---- play: HL = ROM source in flash page A' (caller copies) ... c8_play expects the ROM already at $C200 ------------------
+c8_prepare:                     ; BC = rom length, A = flash page, HL = source address ($4000..)
+    push af
+    push hl
+    push bc
+    ld a,2
+    call S_RAM_PAGE
+    ld hl,$C000
+    ld de,$C001
+    ld bc,$0FFF
+    ld (hl),0
+    ldir
+    ld hl,c8_font
+    ld de,$C050
+    ld bc,80
+    ldir
+    pop bc
+    pop hl
+    pop af
+    ld de,$C200
+    cp $FF                      ; A = $FF: the ROM is in RAM (installed OTA game), otherwise a flash page
+    jr z,cpr_ram
+    call S_BANK_COPY
+    jp c8_reset
+cpr_ram:
+    ldir
+    jp c8_reset
+
+c8_release_clear:               ; wait until CLEAR is let go (the menus read keys by edge)
+    call c8_scankeys
+    or a
+    ret z
+    call S_FRAME_WAIT
+    jr c8_release_clear
+
+c8_play:                        ; run until CLEAR is pressed
+    ld a,(v_statbar)
+    push af
+    ld a,(v_mode)
+    push af
+    xor a
+    ld (v_statbar),a
+    ld a,1
+    call S_SET_MODE
+    xor a
+    ld (c8_acc),a
+cp_loop:
+    ld a,(v_flags)              ; the idle timer ran out (nobody is playing): deep sleep like everywhere else
+    bit F_WANTSLEEP,a
+    call nz,S_POWER_SLEEP
+    call c8_scankeys
+    ld c,a
+    ld a,(c8_keys)
+    ld b,a
+    ld a,(c8_keys+1)
+    or b
+    jr z,cp_nokey
+    xor a
+    ld (v_idle),a
+cp_nokey:
+    ld a,c
+    or a
+    jr nz,cp_exit
+    xor a
+    ld (c8_yield),a
+    ld b,150
+cp_run:
+    push bc
+    call c8_step
+    pop bc
+    ld a,(c8_yield)
+    or a
+    jr nz,cp_ran
+    djnz cp_run
+cp_ran:
+    ld a,(c8_acc)               ; 60 Hz against the 108 Hz tick
+    add a,60
+    cp 108
+    jr c,cp_noT
+    sub 108
+    ld (c8_acc),a
+    call c8_timers
+    jr cp_T
+cp_noT:
+    ld (c8_acc),a
+cp_T:
+    ld a,(c8_dirty)
+    or a
+    jr z,cp_wait
+    ld a,(c8_yield)             ; a frame is complete when the game reached its Fx07 wait; if the burst limit stopped it mid-frame (erase /
+    or a                        ; redraw of a big scene) showing it would flicker half-drawn pictures: keep running, show after 4 ticks at most
+    jr nz,cp_show
+    ld a,(c8_nr)
+    inc a
+    ld (c8_nr),a
+    cp 4
+    jr c,cp_wait
+cp_show:
+    xor a
+    ld (c8_nr),a
+    ld (c8_dirty),a
+    call c8_render
+    call S_LCD_BLIT
+cp_wait:
+    call S_FRAME_WAIT
+    jr cp_loop
+cp_exit:
+    call c8_release_clear
+    xor a
+    call S_RAM_PAGE
+    pop af
+    call S_SET_MODE
+    pop af
+    ld (v_statbar),a
+    ret

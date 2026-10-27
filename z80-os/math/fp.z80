@@ -1,0 +1,764 @@
+; =============================================================================
+; fp.z80 -- floating point core: FA (accumulator) and FB (operand) in RAM.  Results land in FA.
+;   fx_add fx_sub fx_mul fx_div fx_cmp  (FA op FB), fx_neg fx_abs, integer conversion, fx_sqrt
+; Errors are reported in fx_err (never an exception): 1 domain, 2 overflow, 3 divide by zero.
+; =============================================================================
+
+; ---- moves ----------------------------------------------------------------------------------
+fx_lda:                         ; HL -> FA
+    ld de,fx_a
+    ld bc,6
+    ldir
+    ret
+fx_ldb:                         ; HL -> FB
+    ld de,fx_b
+    ld bc,6
+    ldir
+    ret
+fx_sta:                         ; FA -> (DE)
+    ld hl,fx_a
+    ld bc,6
+    ldir
+    ret
+fx_stb:                         ; FB -> (DE)
+    ld hl,fx_b
+    ld bc,6
+    ldir
+    ret
+fx_ab:                          ; FB = FA
+    ld hl,fx_a
+    ld de,fx_b
+    ld bc,6
+    ldir
+    ret
+fx_ba:                          ; FA = FB
+    ld hl,fx_b
+    ld de,fx_a
+    ld bc,6
+    ldir
+    ret
+fx_swap:
+    ld hl,fx_a
+    ld de,fx_b
+    ld b,6
+fx_swl:
+    ld a,(de)
+    ld c,(hl)
+    ld (hl),a
+    ld a,c
+    ld (de),a
+    inc hl
+    inc de
+    djnz fx_swl
+    ret
+fx_zero:                        ; FA = 0
+    xor a
+    ld (fx_a),a
+    ld (fx_a+1),a
+    ret
+fx_one:                         ; FA = 1
+    ld hl,fxk_one
+    jp fx_lda
+fx_neg:
+    ld a,(fx_a)
+    or a
+    ret z
+    ld hl,fx_a+1
+    ld a,(hl)
+    xor 1
+    ld (hl),a
+    ret
+fx_negb:
+    ld a,(fx_b)
+    or a
+    ret z
+    ld hl,fx_b+1
+    ld a,(hl)
+    xor 1
+    ld (hl),a
+    ret
+fx_abs:
+    xor a
+    ld (fx_a+1),a
+    ret
+
+; ---- errors ---------------------------------------------------------------------------------
+fx_domain:                      ; FA = 0, error 1
+    ld a,1
+    ld (fx_err),a
+    jp fx_zero
+fx_dz:                          ; division by zero: error 3, FA = largest value
+    ld a,3
+    ld (fx_err),a
+    jp fx_max
+fx_over:
+    ld a,2
+    ld (fx_err),a
+fx_max:
+    ld a,255
+    ld (fx_a),a
+    ld a,$FF
+    ld (fx_a+2),a
+    ld (fx_a+3),a
+    ld (fx_a+4),a
+    ld (fx_a+5),a
+    ret
+fx_under:
+    jp fx_zero
+
+; apply the 16-bit exponent in fx_ex to FA (overflow / underflow aware)
+fx_setex:
+    ld hl,(fx_ex)
+    bit 7,h
+    jr nz,fx_under
+    ld a,h
+    or a
+    jr nz,fx_over
+    ld a,l
+    or a
+    jr z,fx_under
+    ld (fx_a),a
+    ret
+
+; ---- compare ---------------------------------------------------------------------------------
+; fx_cmp4: compare 4 bytes (DE) with (HL), MSB first.  Z = equal, C = (DE) < (HL)
+fx_cmp4:
+    ld b,4
+fx_c4a:
+    ld a,(de)
+    cp (hl)
+    ret nz
+    inc hl
+    inc de
+    djnz fx_c4a
+    xor a
+    ret
+
+; FA ? FB -> A = $FF (less, carry set), 0 (equal), 1 (greater)
+fx_cmp:
+    ld a,(fx_a)
+    or a
+    jr z,fx_cm1
+    ld a,(fx_b)
+    or a
+    jr z,fx_cm2
+    ld a,(fx_a+1)
+    ld hl,fx_b+1
+    cp (hl)
+    jr z,fx_cm3
+    or a
+    jr nz,fx_cmlt
+    jr fx_cmgt
+fx_cm1:
+    ld a,(fx_b)
+    or a
+    jr z,fx_cmeq
+    ld a,(fx_b+1)
+    or a
+    jr z,fx_cmlt
+    jr fx_cmgt
+fx_cm2:
+    ld a,(fx_a+1)
+    or a
+    jr z,fx_cmgt
+    jr fx_cmlt
+fx_cm3:
+    ld a,(fx_a)
+    ld hl,fx_b
+    cp (hl)
+    jr nz,fx_cm4
+    ld hl,fx_b+2
+    ld de,fx_a+2
+    call fx_cmp4
+    jr z,fx_cmeq
+fx_cm4:
+    ld a,(fx_a+1)
+    jr c,fx_cm5
+    or a
+    jr z,fx_cmgt
+    jr fx_cmlt
+fx_cm5:
+    or a
+    jr z,fx_cmlt
+    jr fx_cmgt
+fx_cmlt:
+    ld a,$FF
+    or a
+    scf
+    ret
+fx_cmgt:
+    ld a,1
+    or a
+    ret
+fx_cmeq:
+    xor a
+    ret
+
+; ---- normalise FA (mantissa may have leading zeros after a subtraction) -----------------------------------
+fx_norm:
+    ld a,(fx_a+2)
+    or a
+    jr nz,fx_nm1
+    ld hl,fx_a+3                ; top byte empty: move 8 bits at once
+    ld a,(hl)
+    inc hl
+    or (hl)
+    inc hl
+    or (hl)
+    jp z,fx_zero                ; mantissa is zero
+    ld a,(fx_a)
+    sub 8
+    jp c,fx_under
+    jp z,fx_under
+    ld (fx_a),a
+    ld hl,fx_a+3
+    ld de,fx_a+2
+    ld bc,3
+    ldir
+    xor a
+    ld (fx_a+5),a
+    jr fx_norm
+fx_nm1:
+    ld a,(fx_a+2)
+    or a
+    ret m
+    ld hl,fx_a+5
+    sla (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    ld hl,fx_a
+    dec (hl)
+    jp z,fx_under
+    jr fx_nm1
+
+; ---- add / sub ----------------------------------------------------------------------------------
+fx_sub:
+    call fx_negb
+fx_add:
+    ld a,(fx_b)
+    or a
+    ret z
+    ld a,(fx_a)
+    or a
+    jp z,fx_ba
+    ld hl,fx_b
+    cp (hl)
+    jr nc,fx_ad1
+    call fx_swap
+fx_ad1:
+    ld a,(fx_a)
+    ld hl,fx_b
+    sub (hl)                    ; exponent difference
+    cp 33
+    ret nc
+    ld c,0
+    or a
+    jr z,fx_ad3
+    ld b,a
+fx_ad2:
+    ld hl,fx_b+2
+    srl (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    rr (hl)
+    djnz fx_ad2
+    ld c,0
+    rl c                        ; c = last bit shifted out (rounding)
+fx_ad3:
+    ld a,(fx_a+1)
+    ld hl,fx_b+1
+    xor (hl)
+    jr nz,fx_adsub
+    ld hl,fx_b+5
+    ld de,fx_a+5
+    ld b,4
+    srl c                       ; carry = rounding bit
+fx_ad4:
+    ld a,(de)
+    adc a,(hl)
+    ld (de),a
+    dec hl
+    dec de
+    djnz fx_ad4
+    ret nc
+    ld hl,fx_a+2
+    rr (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    rr (hl)
+    ld hl,fx_a
+    inc (hl)
+    ret nz
+    jp fx_over
+fx_adsub:
+    ld hl,fx_b+2
+    ld de,fx_a+2
+    push bc
+    call fx_cmp4
+    pop bc
+    jr nc,fx_ad6                ; FA >= FB
+    call fx_swap                ; FB larger (equal exponents, no rounding bit)
+    ld c,0
+fx_ad6:
+    ld hl,fx_b+5
+    ld de,fx_a+5
+    ld b,4
+    srl c
+fx_ad7:
+    ld a,(de)
+    sbc a,(hl)
+    ld (de),a
+    dec hl
+    dec de
+    djnz fx_ad7
+    jp fx_norm
+
+; ---- multiply -----------------------------------------------------------------------------------
+fx_mul:
+    ld a,(fx_a)
+    or a
+    ret z
+    ld a,(fx_b)
+    or a
+    jp z,fx_zero
+    ld a,(fx_b+1)
+    ld hl,fx_a+1
+    xor (hl)
+    ld (hl),a
+    ld a,(fx_a)
+    ld e,a
+    ld d,0
+    ld a,(fx_b)
+    ld l,a
+    ld h,0
+    add hl,de
+    ld de,$FF80                 ; -128
+    add hl,de
+    ld (fx_ex),hl
+    ld hl,fx_pq
+    xor a
+    ld (hl),a
+    inc hl
+    ld (hl),a
+    inc hl
+    ld (hl),a
+    inc hl
+    ld (hl),a
+    inc hl
+    ex de,hl
+    ld hl,fx_b+2
+    ld bc,4
+    ldir
+    ld b,32
+fx_mu1:
+    ld a,(fx_pq+7)
+    rrca
+    jr nc,fx_mu2
+    ld hl,fx_a+5
+    ld de,fx_pq+3
+    push bc
+    ld b,4
+    or a
+fx_mu3:
+    ld a,(de)
+    adc a,(hl)
+    ld (de),a
+    dec hl
+    dec de
+    djnz fx_mu3
+    pop bc
+fx_mu2:
+    ld hl,fx_pq
+    push bc
+    ld b,8
+fx_mu4:
+    rr (hl)
+    inc hl
+    djnz fx_mu4
+    pop bc
+    djnz fx_mu1
+    ld a,(fx_pq)
+    or a
+    jp m,fx_mu5
+    ld hl,fx_pq+4
+    sla (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    ld hl,(fx_ex)
+    dec hl
+    ld (fx_ex),hl
+fx_mu5:
+    ld a,(fx_pq+4)
+    rla
+    jr nc,fx_mu6
+    ld hl,fx_pq+3
+    inc (hl)
+    jr nz,fx_mu6
+    dec hl
+    inc (hl)
+    jr nz,fx_mu6
+    dec hl
+    inc (hl)
+    jr nz,fx_mu6
+    dec hl
+    inc (hl)
+    jr nz,fx_mu6
+    ld a,$80
+    ld (fx_pq),a
+    ld hl,(fx_ex)
+    inc hl
+    ld (fx_ex),hl
+fx_mu6:
+    ld hl,fx_pq
+    ld de,fx_a+2
+    ld bc,4
+    ldir
+    jp fx_setex
+
+; ---- divide -------------------------------------------------------------------------------------
+fx_div:
+    ld a,(fx_b)
+    or a
+    jp z,fx_dz
+    ld a,(fx_a)
+    or a
+    ret z
+    ld a,(fx_b+1)
+    ld hl,fx_a+1
+    xor (hl)
+    ld (hl),a
+    ld a,(fx_a)
+    ld l,a
+    ld h,0
+    ld de,128
+    add hl,de
+    ld a,(fx_b)
+    ld e,a
+    ld d,0
+    or a
+    sbc hl,de
+    ld (fx_ex),hl
+    ld hl,fx_a+2
+    ld de,fx_qr
+    ld bc,4
+    ldir
+    xor a
+    ld (fx_q),a
+    ld (fx_q+1),a
+    ld (fx_q+2),a
+    ld (fx_q+3),a
+    ld (fx_ov),a
+    ld a,33
+    ld (fx_cnt),a
+fx_dv1:
+    ld a,(fx_ov)
+    or a
+    jr nz,fx_dv2
+    ld hl,fx_b+2
+    ld de,fx_qr
+    call fx_cmp4
+    jr c,fx_dv3
+fx_dv2:
+    ld hl,fx_b+5
+    ld de,fx_qr+3
+    ld b,4
+    or a
+fx_dv4:
+    ld a,(de)
+    sbc a,(hl)
+    ld (de),a
+    dec hl
+    dec de
+    djnz fx_dv4
+    scf
+    jr fx_dv5
+fx_dv3:
+    or a
+fx_dv5:
+    ld hl,fx_q+3
+    rl (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    ld a,0
+    rla
+    ld (fx_b0),a
+    ld hl,fx_qr+3
+    sla (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    dec hl
+    rl (hl)
+    ld a,0
+    rla
+    ld (fx_ov),a
+    ld a,(fx_cnt)
+    dec a
+    ld (fx_cnt),a
+    jr nz,fx_dv1
+    ld a,(fx_b0)
+    or a
+    jr z,fx_dv6
+    scf
+    ld hl,fx_q
+    rr (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    rr (hl)
+    ld hl,(fx_ex)
+    inc hl
+    ld (fx_ex),hl
+fx_dv6:
+    ld hl,fx_q
+    ld de,fx_a+2
+    ld bc,4
+    ldir
+    jp fx_setex
+
+; ---- integer conversion -------------------------------------------------------------------------------
+fx_from_u32:                    ; fx_i (u32, MSB first) -> FA
+    ld hl,fx_i
+    ld de,fx_a+2
+    ld bc,4
+    ldir
+    xor a
+    ld (fx_a+1),a
+    ld a,160
+    ld (fx_a),a
+    ld a,(fx_a+2)
+    ld hl,fx_a+3
+    or (hl)
+    inc hl
+    or (hl)
+    inc hl
+    or (hl)
+    jp z,fx_zero
+    jp fx_norm
+
+fx_from_i16:                    ; HL = signed 16-bit -> FA
+    ld a,h
+    and $80
+    ld (fx_sgn),a
+    jr z,fx_fi1
+    ld a,l
+    cpl
+    ld l,a
+    ld a,h
+    cpl
+    ld h,a
+    inc hl
+fx_fi1:
+    xor a
+    ld (fx_i),a
+    ld (fx_i+1),a
+    ld a,h
+    ld (fx_i+2),a
+    ld a,l
+    ld (fx_i+3),a
+    call fx_from_u32
+    ld a,(fx_a)
+    or a
+    ret z
+    ld a,(fx_sgn)
+    or a
+    ret z
+    ld a,1
+    ld (fx_a+1),a
+    ret
+
+fx_to_u32:                      ; |FA| truncated -> fx_i; carry set if it did not fit
+    ld a,(fx_a)
+    or a
+    jr z,fx_tu0
+    cp 129
+    jr c,fx_tu0
+    cp 161
+    jr nc,fx_tuo
+    ld d,a
+    ld a,160
+    sub d
+    ld d,a                      ; shift count
+    ld hl,fx_a+2
+    ld bc,4
+    ld a,d
+    ld de,fx_i
+    ldir
+    or a
+    ret z
+    ld b,a
+fx_tu1:
+    ld hl,fx_i
+    srl (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    rr (hl)
+    inc hl
+    rr (hl)
+    djnz fx_tu1
+    or a
+    ret
+fx_tu0:
+    xor a
+    ld (fx_i),a
+    ld (fx_i+1),a
+    ld (fx_i+2),a
+    ld (fx_i+3),a
+    ret
+fx_tuo:
+    ld a,$FF
+    ld (fx_i),a
+    ld (fx_i+1),a
+    ld (fx_i+2),a
+    ld (fx_i+3),a
+    scf
+    ret
+
+fx_trunc:                       ; FA = trunc(FA)
+    ld a,(fx_a)
+    cp 161
+    ret nc
+    ld a,(fx_a+1)
+    push af
+    call fx_to_u32
+    call fx_from_u32
+    pop af
+    ld b,a
+    ld a,(fx_a)
+    or a
+    ret z
+    ld a,b
+    ld (fx_a+1),a
+    ret
+
+fx_floor:                       ; FA = floor(FA)
+    ld a,(fx_a)
+    cp 161
+    ret nc
+    ld hl,fx_a
+    ld de,fx_u
+    ld bc,6
+    ldir
+    call fx_trunc
+    ld a,(fx_u+1)
+    or a
+    ret z                       ; positive: trunc == floor
+    ld a,(fx_u)
+    or a
+    ret z
+    ld hl,fx_u
+    call fx_ldb
+    call fx_cmp                 ; trunc vs original
+    ret z
+    ld hl,fxk_one
+    call fx_ldb
+    jp fx_sub                   ; trunc - 1
+
+fx_ceil:
+    call fx_neg
+    call fx_floor
+    jp fx_neg
+
+; FA -> signed 16-bit in HL (truncated, saturating); carry if out of range
+fx_to_i16:
+    call fx_to_u32
+    jr c,fx_ti_big
+    ld a,(fx_i)
+    ld b,a
+    ld a,(fx_i+1)
+    or b
+    jr nz,fx_ti_big
+    ld a,(fx_i+2)
+    ld h,a
+    ld a,(fx_i+3)
+    ld l,a
+    bit 7,h
+    jr nz,fx_ti_big
+    ld a,(fx_a+1)
+    or a
+    ret z
+    ld a,l
+    cpl
+    ld l,a
+    ld a,h
+    cpl
+    ld h,a
+    inc hl
+    or a
+    ret
+fx_ti_big:
+    ld hl,$7FFF
+    scf
+    ret
+
+; ---- exponent helpers ------------------------------------------------------------------------------------
+fx_halve:                       ; FA = FA / 2
+    ld hl,fx_a
+    ld a,(hl)
+    or a
+    ret z
+    dec (hl)
+    jp z,fx_under
+    ret
+fx_double:
+    ld hl,fx_a
+    ld a,(hl)
+    or a
+    ret z
+    inc (hl)
+    ret nz
+    jp fx_over
+
+; ---- sqrt ---------------------------------------------------------------------------------------------
+fx_sqrt:
+    ld a,(fx_a)
+    or a
+    ret z
+    ld a,(fx_a+1)
+    or a
+    jp nz,fx_domain
+    ld hl,fx_a
+    ld de,fx_t
+    ld bc,6
+    ldir
+    ld a,(fx_a)
+    sub 127                     ; (exp - 128) + 1
+    sra a
+    add a,128
+    ld (fx_a),a
+    ld b,6
+fx_sq1:
+    push bc
+    call fx_ab                  ; FB = x
+    ld hl,fx_t
+    call fx_lda                 ; FA = a
+    call fx_div                 ; a / x   (FB still x)
+    call fx_add                 ; a/x + x
+    call fx_halve
+    pop bc
+    djnz fx_sq1
+    ret

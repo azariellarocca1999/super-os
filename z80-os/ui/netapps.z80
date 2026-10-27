@@ -1,0 +1,263 @@
+; =============================================================================
+; Network apps: AI chat (DeepSeek V3 / R1), WiFi + API key setup, books.
+; All traffic goes through link_request (SuperLink); the reply is a ZX0 stream in RESPBUF.
+; =============================================================================
+
+; ---- chat -------------------------------------------------------------------------------------------------
+app_chat:
+    ld hl,STR_Q_CHAT
+    call tr
+    ld a,1                      ; b0: MODE swaps deepseek-chat <-> deepseek-reasoner
+    call text_edit
+    ret c
+    call show_wait
+    ld a,(v_model)
+    ld (INBUF),a                ; payload = [model][text]
+    ld a,(v_inlen)
+    inc a
+    ld b,a
+    ld hl,INBUF
+    ld a,CMD_CHAT
+    call S_LINK_REQUEST
+    jp c,net_fail
+    call inflate_reply
+    call viewer
+    jp app_aiplot               ; offers to plot a [PLOT: f(x), xmin, xmax] block of the answer
+
+show_wait:
+    ld hl,STR_APP_INFO
+    call tr
+    call ui_begin
+    ld hl,STR_WAITING
+    call tr
+    ld b,2
+    ld c,28
+    call S_PUTS
+    jp S_LCD_BLIT
+
+net_fail:
+    ld hl,STR_NOLINK
+    jp ui_message
+
+; ---- WiFi & API setup ----------------------------------------------------------------------------------
+app_wifi:
+    ld hl,STR_APP_WIFI
+    call ui_begin_id
+    ld hl,STR_W_MENU1
+    call tr
+    ld b,0
+    ld c,20
+    call S_PUTS
+    ld hl,STR_W_MENU2
+    call tr
+    ld b,0
+    ld c,30
+    call S_PUTS
+    call ui_wait_any
+    cp K_1
+    jr z,wifi_scan
+    cp K_2
+    jp z,wifi_api
+    ret
+
+wifi_scan:
+    call show_wait
+    ld hl,INBUF
+    ld b,0
+    ld a,CMD_WIFI_SCAN
+    call S_LINK_REQUEST
+    jp c,net_fail
+    call inflate_reply
+    ; numbered list: "SSID|RSSI" lines in TEXTBUF
+    ld hl,STR_W_PICK
+    call tr
+    call ui_begin
+    ld hl,TEXTBUF
+    ld a,'1'
+    ld (v_ui1),a
+    ld a,14
+    ld (v_ui0),a
+wifi_list:
+    ld a,(hl)
+    or a
+    jr z,wifi_listed
+    ld a,(v_ui1)
+    cp '9'+1
+    jr nc,wifi_listed
+    push hl
+    ld b,0
+    ld a,(v_ui0)
+    ld c,a
+    ld a,(v_ui1)
+    call S_PUTCHAR
+    pop hl
+    push hl
+    ld b,2
+    ld a,(v_ui0)
+    ld c,a
+    pop hl
+wifi_ln:
+    ld a,(hl)
+    or a
+    jr z,wifi_listed
+    inc hl
+    cp 10
+    jr z,wifi_next
+    cp '|'
+    jr nz,wifi_ch
+    ld a,' '
+wifi_ch:
+    push hl
+    push bc
+    call S_PUTCHAR
+    pop bc
+    pop hl
+    inc b
+    ld a,b
+    cp 24
+    jr c,wifi_ln
+    jr wifi_ln
+wifi_next:
+    ld a,(v_ui1)
+    inc a
+    ld (v_ui1),a
+    ld a,(v_ui0)
+    add a,6
+    ld (v_ui0),a
+    jr wifi_list
+wifi_listed:
+    call ui_wait_any            ; A = key
+    ld b,a
+    ld hl,wifi_keymap
+    ld c,0
+wifi_find:
+    ld a,(hl)
+    inc hl
+    cp b
+    jr z,wifi_got
+    inc c
+    ld a,c
+    cp 9
+    jr c,wifi_find
+    ret
+wifi_got:                       ; C = chosen line (0-based)
+    ld hl,TEXTBUF
+    ld b,c
+wifi_nl:
+    ld a,b
+    or a
+    jr z,wifi_at
+wifi_chr:
+    ld a,(hl)
+    or a
+    ret z
+    inc hl
+    cp 10
+    jr nz,wifi_chr
+    dec b
+    jr wifi_nl
+wifi_at:                        ; copy the SSID (up to '|') into WIFIBUF
+    ld de,WIFIBUF
+wifi_copy:
+    ld a,(hl)
+    or a
+    jr z,wifi_end
+    cp '|'
+    jr z,wifi_end
+    cp 10
+    jr z,wifi_end
+    ld (de),a
+    inc hl
+    inc de
+    jr wifi_copy
+wifi_end:
+    xor a
+    ld (de),a
+    inc de
+    ld (v_wptr),de
+    ld hl,STR_W_PASS
+    call tr
+    ld a,2                      ; password entry starts in ABC mode
+    call text_edit
+    ret c
+    ld de,(v_wptr)
+    ld hl,EDBUF
+    ld a,(v_inlen)
+    ld c,a
+    ld b,0
+    or a
+    jr z,wifi_nopass
+    ldir
+wifi_nopass:
+    ld hl,WIFIBUF
+    or a
+    ex de,hl
+    ld de,WIFIBUF
+    or a
+    sbc hl,de                   ; HL = total length
+    ld b,l
+    ld hl,WIFIBUF
+    ld a,CMD_WIFI_SET
+    call S_LINK_REQUEST
+    jp c,net_fail
+    ld hl,STR_W_OK
+    jp ui_message
+
+wifi_keymap: .db K_1,K_2,K_3,K_4,K_5,K_6,K_7,K_8,K_9
+
+wifi_api:
+    ld hl,STR_W_API
+    call tr
+    ld a,2                      ; start in ABC mode
+    call text_edit
+    ret c
+    ld hl,EDBUF
+    ld a,(v_inlen)
+    ld b,a
+    ld a,CMD_API_SET
+    call S_LINK_REQUEST
+    jp c,net_fail
+    ld hl,STR_W_OK
+    jp ui_message
+
+; ---- books ----------------------------------------------------------------------------------------------------
+app_books:
+    ld hl,STR_APP_BOOKS
+    call ui_begin_id
+    ld hl,STR_B_1
+    call tr
+    ld b,0
+    ld c,20
+    call S_PUTS
+    ld hl,STR_B_3
+    call tr
+    ld b,0
+    ld c,30
+    call S_PUTS
+    call ui_wait_any
+    cp K_1
+    jr z,books_rom
+    cp K_3
+    jr z,books_demo
+    ret
+books_rom:
+    xor a
+    call S_RAM_PAGE
+    ld hl,fn_book1
+    ld de,TEXTBUF
+    call S_FS_LOAD
+    ret c
+    ld hl,TEXTBUF
+    add hl,bc
+    xor a
+    ld (hl),a
+    ld (v_vend),hl
+    jp viewer
+books_demo:                     ; run a TI-OS / Ion style program through the B_CALL shim
+    ld hl,fn_demo
+    ld de,USERMEM
+    call S_FS_LOAD
+    ret c
+    jp S_RUN_USERPROG
+fn_book1: .db "BOOK1",0
+fn_demo:  .db "DEMO",0

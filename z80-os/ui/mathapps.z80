@@ -1,0 +1,73 @@
+; ---- launchers for the apps living in flash page 3 (math) -----------------------------------------
+MATH_PAGE .equ 3
+
+app_calc:
+    ld ix,CALC_MAIN
+    jr app_math
+app_graph:
+    ld ix,GRAPH_MAIN
+    jr app_math
+app_cas:
+    ld ix,CAS_MAIN
+    jr app_math
+app_step:
+    ld ix,CASSTEP_MAIN
+    jr app_math
+app_conv:
+    ld ix,CONV_MAIN
+    jr app_math
+app_aiplot:
+    ld ix,AIPLOT_MAIN
+app_math:
+    ld a,MATH_PAGE
+    jp S_CALL_PAGEX
+app_ptable:
+    ld ix,PTABLE_MAIN
+    jr app_info4
+app_const:
+    ld ix,CONST_MAIN
+    jr app_info4
+app_wiki:
+    ld ix,WIKI_MAIN
+    jr app_info4
+app_weather:
+    ld ix,WEATHER_MAIN
+app_info4:
+    ld a,4
+    jp S_CALL_PAGEX
+; ---- games (flash page 5) ----------------------------------------------------------------------------------------
+app_tetris:
+    ld ix,GAME_TETRIS
+    jr app_games
+app_snake:
+    ld ix,GAME_SNAKE
+    jr app_games
+app_break:
+    ld ix,GAME_BREAKOUT
+    jr app_games
+app_pong:
+    ld ix,GAME_PONG
+    jr app_games
+app_2048:
+    ld ix,GAME_2048
+    jr app_games
+app_invad:
+    ld ix,GAME_INVADERS
+    jr app_games
+app_mines:
+    ld ix,GAME_MINES
+    jr app_games
+app_classic:
+    ld ix,PACK_ALL
+    jr app_games
+app_packa:
+    ld ix,PACK_A
+    jr app_games
+app_packb:
+    ld ix,PACK_B
+    jr app_games
+app_packc:
+    ld ix,PACK_C
+app_games:
+    ld a,5
+    jp S_CALL_PAGEX

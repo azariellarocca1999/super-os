@@ -1,0 +1,213 @@
+; INVADERS -- original.  4 / 6 = move, 5 (or 2) = fire.  Shoot all 15 aliens before they land.
+; v0 transfer, v1 ship x, v2 bullet x, v3 bullet y (0 = no bullet), v4/v5 alien grid origin, v6 dir (1 right), v7 aliens left,
+; v8 v9 draw temps, va frame temp, vb alien index, vc vd ve temps
+map .equ 0x600                   ; 15 bytes, 1 = alive
+cnt .equ 0x61F
+start:
+    cls
+    ld i,map
+    ld v0,1
+    ld vb,0
+mf:
+    ld [i],v0
+    add vb,1
+    se vb,15
+    jp mf
+    ld v7,15
+    ld v1,28
+    ld v3,0
+    ld v4,8
+    ld v5,2
+    ld v6,1
+    ld v0,0
+    ld i,cnt
+    ld [i],v0
+    call dall
+    call dship
+    ld va,30
+    ld dt,va
+sv:
+    ld va,dt
+    se va,0
+    jp sv
+loop:
+    call dall                   ; erase
+    call dship
+    se v3,0
+    call dbullet
+    ld va,4
+    sknp va
+    call goleft
+    ld va,6
+    sknp va
+    call goright
+    ld va,5
+    sknp va
+    call fire
+    ld va,2
+    sknp va
+    call fire
+    se v3,0                     ; move the bullet up
+    call bmove
+    ld i,cnt                    ; aliens step every 5th frame
+    ld v0,[i]
+    add v0,1
+    se v0,5
+    jp nostep
+    ld v0,0
+    ld [i],v0
+    call astep
+    jp stepped
+nostep:
+    ld [i],v0
+stepped:
+    call dall                   ; draw
+    call dship
+    se v3,0
+    call dbullet
+    se vf,1                     ; the bullet touched an alien?
+    jp tick
+    call findhit
+tick:
+    ld va,dt
+    se va,0
+    jp tick
+    ld va,2
+    ld dt,va
+    jp loop
+goleft:
+    sne v1,0
+    ret
+    add v1,0xFE
+    ret
+goright:
+    se v1,56
+    add v1,2
+    ret
+fire:
+    sne v3,0
+    jp fire2
+    ret
+fire2:
+    ld v2,v1
+    add v2,3
+    ld v3,26
+    ret
+bmove:
+    add v3,0xFD
+    ld vc,3                     ; off the top (wrapped or <= 3): cancel
+    sub vc,v3
+    se vf,1
+    ret
+    ld v3,0
+    ret
+astep:
+    se v6,1
+    jp aleft
+    add v4,2
+    se v4,18
+    ret
+    ld v6,0
+    jp adown
+aleft:
+    add v4,0xFE
+    se v4,0
+    ret
+    ld v6,1
+adown:
+    add v5,2
+    ld vc,12
+    sub vc,v5
+    se vf,0
+    ret
+    jp start                    ; landed: restart (return address left on the stack is harmless here)
+dship:
+    ld i,ship
+    ld v9,29
+    drw v1,v9,3
+    ret
+dbullet:
+    ld i,shot
+    drw v2,v3,3
+    ret
+dall:
+    ld vb,0
+    ld vc,3
+    ld v9,v5
+dr:
+    ld vd,5
+    ld v8,v4
+dc:
+    ld i,map
+    add i,vb
+    ld v0,[i]
+    se v0,1
+    jp dskip
+    ld i,alien
+    drw v8,v9,4
+dskip:
+    add v8,10
+    add vb,1
+    add vd,0xFF
+    se vd,0
+    jp dc
+    add v9,6
+    add vc,0xFF
+    se vc,0
+    jp dr
+    ret
+findhit:                        ; the bullet (v2,v3) overlaps an alien: find it, kill it, erase both sprites
+    ld vb,0
+    ld vc,3
+    ld v9,v5
+fr:
+    ld vd,5
+    ld v8,v4
+fc:
+    ld i,map
+    add i,vb
+    ld v0,[i]
+    se v0,1
+    jp fskip
+    ld ve,v2                    ; x test: 0 <= bx - ax <= 5
+    sub ve,v8
+    ld v0,5
+    sub v0,ve
+    se vf,1
+    jp fskip
+    ld ve,v3                    ; y test: 0 <= by + 2 - ay <= 5
+    add ve,2
+    sub ve,v9
+    ld v0,5
+    sub v0,ve
+    se vf,1
+    jp fskip
+    ld i,map                    ; hit
+    add i,vb
+    ld v0,0
+    ld [i],v0
+    ld i,alien
+    drw v8,v9,4
+    call dbullet
+    ld v3,0
+    add v7,0xFF
+    se v7,0
+    ret
+    jp start
+fskip:
+    add v8,10
+    add vb,1
+    add vd,0xFF
+    se vd,0
+    jp fc
+    add v9,6
+    add vc,0xFF
+    se vc,0
+    jp fr
+    ret
+ship:
+    db 0x18,0x3C,0xFF
+alien:
+    db 0x84,0x78,0xFC,0xB4
+shot:
+    db 0x80,0x80,0x80

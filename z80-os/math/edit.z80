@@ -1,0 +1,444 @@
+; =============================================================================
+; edit.z80 -- calculator-style expression editor (shared by the calculator, Y= editor, window, CAS input)
+;   ed_start  HL = buffer (0-terminated tokens), A = max length
+;   ed_key    A = key code -> A = 0 (consumed) or a KC_ control code for the caller
+;   ed_render HL = buffer, B = cursor index (255 = none), C = y of the first row -> draws 2 rows (24 cols each)
+; Mode keys: 2ND / ALPHA set bits in ed_mod, cleared by the next key.
+; =============================================================================
+ED_BASE  .equ (M_BASE+$160)
+ed_buf   .equ ED_BASE
+ed_len   .equ (ED_BASE+2)
+ed_cur   .equ (ED_BASE+3)
+ed_max   .equ (ED_BASE+4)
+ed_mod   .equ (ED_BASE+5)
+m_sp     .equ (ED_BASE+6)
+m_magic  .equ (ED_BASE+8)
+rn_cur   .equ (ED_BASE+10)
+rn_end   .equ (ED_BASE+11)
+rn_y     .equ (ED_BASE+13)
+rn_idx   .equ (ED_BASE+14)
+m_misc2  .equ (ED_BASE+15)
+c_last   .equ (ED_BASE+16)      ; 52 bytes: previous expression
+c_inbuf  .equ (ED_BASE+68)      ; 52 bytes: expression being typed
+rbuf     .equ (ED_BASE+120)     ; 104 bytes: rendered text
+rrow     .equ (ED_BASE+224)     ; 26 bytes
+c_hist   .equ (ED_BASE+250)     ; 3 entries x (25 + 25)
+c_flag   .equ (ED_BASE+400)
+c_hst    .equ (ED_BASE+401)     ; result of the last evaluation (0 ok / error code)
+ed_menu  .equ (ED_BASE+410)       ; 1 = MATH key opens the CAS command menu
+rn_col   .equ (ED_BASE+407)
+rn_w     .equ (ED_BASE+409)
+m_oldfont .equ (ED_BASE+402)
+m_oldmode .equ (ED_BASE+403)
+m_sel    .equ (ED_BASE+404)
+m_top    .equ (ED_BASE+405)
+m_row    .equ (ED_BASE+406)
+fm_tmp   .equ (ED_BASE+408)
+ED_END   .equ (ED_BASE+420)
+MSTACK   .equ $BE00             ; private stack for the math apps (BIGSTK region $B800..$BDFF)
+
+ed_start:
+    ld (ed_buf),hl
+    ld (ed_max),a
+    xor a
+    ld (ed_mod),a
+    ld c,0
+es1:
+    ld a,(hl)
+    or a
+    jr z,es2
+    inc hl
+    inc c
+    jr es1
+es2:
+    ld a,c
+    ld (ed_len),a
+    ld (ed_cur),a
+    ret
+
+ed_insert:                      ; A = char / token
+    push af
+    ld a,(ed_len)
+    ld b,a
+    ld a,(ed_max)
+    cp b
+    jr z,ei_full
+    jr c,ei_full
+    ld hl,(ed_buf)
+    ld e,b
+    ld d,0
+    add hl,de                   ; terminator
+    ld d,h
+    ld e,l
+    inc de
+    ld a,(ed_cur)
+    ld c,a
+    ld a,b
+    sub c
+    inc a
+    ld c,a
+    ld b,0
+    lddr
+    ld hl,(ed_buf)
+    ld a,(ed_cur)
+    ld e,a
+    ld d,0
+    add hl,de
+    pop af
+    ld (hl),a
+    ld hl,ed_len
+    inc (hl)
+    ld hl,ed_cur
+    inc (hl)
+    ret
+ei_full:
+    pop af
+    ret
+
+ed_delete:                      ; delete the item before the cursor
+    ld a,(ed_cur)
+    or a
+    ret z
+    ld hl,(ed_buf)
+    dec a
+    ld e,a
+    ld d,0
+    add hl,de
+    ld d,h
+    ld e,l
+    inc hl
+    ld a,(ed_len)
+    ld b,a
+    ld a,(ed_cur)
+    ld c,a
+    ld a,b
+    sub c
+    inc a
+    ld c,a
+    ld b,0
+    ldir
+    ld hl,ed_len
+    dec (hl)
+    ld hl,ed_cur
+    dec (hl)
+    ret
+
+ed_clearall:
+    ld hl,(ed_buf)
+    ld (hl),0
+    xor a
+    ld (ed_len),a
+    ld (ed_cur),a
+    ret
+
+ed_key:
+    cp 57
+    jr c,ek0
+    xor a
+    ret
+ek0:
+    ld c,a
+    ld a,(ed_mod)
+    ld b,0
+    bit 0,a
+    jr z,ek1
+    ld b,1
+    jr ek3
+ek1:
+    bit 1,a
+    jr z,ek3
+    ld b,2
+ek3:
+    ld l,c
+    ld h,0
+    ld d,h
+    ld e,l
+    add hl,hl
+    add hl,de
+    ld e,b
+    ld d,0
+    add hl,de
+    ld de,calc_keytab
+    add hl,de
+    ld a,(hl)
+    or a
+    jr nz,ek4
+    ld (ed_mod),a               ; unmapped key cancels 2ND / ALPHA
+    ret
+ek4:
+    cp $20
+    jr nc,ek_ins
+    cp KC_2ND
+    jr z,ek_2nd
+    cp KC_ALPHA
+    jr z,ek_alpha
+    ld b,a
+    xor a
+    ld (ed_mod),a
+    ld a,b
+    cp KC_DEL
+    jr z,ek_del
+    cp KC_LEFT
+    jr z,ek_left
+    cp KC_RIGHT
+    jr z,ek_right
+    cp KC_CLEAR
+    jr z,ek_clear
+    cp KC_MATH
+    jr z,ek_math
+    cp KC_SQUARE
+    jr z,ek_sq
+    cp KC_INV
+    jr z,ek_inv
+    cp KC_STO
+    jp z,ek_sto
+    ret                         ; caller handles it
+ek_ins:
+    push af
+    xor a
+    ld (ed_mod),a
+    pop af
+    call ed_insert
+    xor a
+    ret
+ek_2nd:
+    ld a,(ed_mod)
+    xor 1
+    and 1
+    ld (ed_mod),a
+    xor a
+    ret
+ek_alpha:
+    ld a,(ed_mod)
+    xor 2
+    and 2
+    ld (ed_mod),a
+    xor a
+    ret
+ek_del:
+    call ed_delete
+    xor a
+    ret
+ek_left:
+    ld a,(ed_cur)
+    or a
+    jr z,ek_done
+    dec a
+    ld (ed_cur),a
+ek_done:
+    xor a
+    ret
+ek_right:
+    ld a,(ed_len)
+    ld b,a
+    ld a,(ed_cur)
+    cp b
+    jr nc,ek_done
+    inc a
+    ld (ed_cur),a
+    xor a
+    ret
+ek_clear:
+    ld a,(ed_len)
+    or a
+    ld a,KC_CLEAR
+    ret z
+    call ed_clearall
+    xor a
+    ret
+ek_math:
+    ld a,(ed_menu)
+    or a
+    jr z,ek_m1
+    call cas_menu
+    xor a
+    ret
+ek_m1:
+    call fn_menu
+    or a
+    ret z
+    call ed_insert
+    xor a
+    ret
+ek_sq:
+    ld a,'^'
+    call ed_insert
+    ld a,'2'
+    call ed_insert
+    xor a
+    ret
+ek_inv:
+    ld a,'^'
+    call ed_insert
+    ld a,'-'
+    call ed_insert
+    ld a,'1'
+    call ed_insert
+    xor a
+    ret
+ek_sto:
+    ld a,'>'
+    call ed_insert
+    xor a
+    ret
+
+; ---- rendering ----------------------------------------------------------------------------------------------------
+rx_putc:                        ; A = char -> (DE++), bounded by rn_end
+    push hl
+    ld hl,(rn_end)
+    or a
+    sbc hl,de
+    pop hl
+    ret c
+    ret z
+    ld (de),a
+    inc de
+    ret
+
+rx_cursor:                      ; put '_' when the item index equals the cursor
+    push af
+    ld a,(rn_cur)
+    ld b,a
+    ld a,(rn_idx)
+    cp b
+    jr nz,rx_nc
+    ld a,'_'
+    call rx_putc
+rx_nc:
+    pop af
+    ret
+
+; HL = tokens, DE = destination text (bounded by rn_end), (rn_cur) = cursor index or 255
+render_expr:
+    xor a
+    ld (rn_idx),a
+rx1:
+    call rx_cursor
+    ld a,(hl)
+    or a
+    jr z,rx_end
+    cp $80
+    jr c,rx_plain
+    push hl
+    cp $F0
+    jr nc,rx_special
+    sub $80
+    ld l,a
+    ld h,0
+    add hl,hl
+    ld bc,tok_names
+    add hl,bc
+    jr rx_name
+rx_special:
+    sub $F0
+    cp 4
+    jr c,rx_sp2
+    xor a
+rx_sp2:
+    ld l,a
+    ld h,0
+    add hl,hl
+    ld bc,tn_special
+    add hl,bc
+rx_name:
+    ld c,(hl)
+    inc hl
+    ld h,(hl)
+    ld l,c                      ; HL -> name text
+    ld a,(hl)
+rx_nl:
+    or a
+    jr z,rx_nd
+    call rx_putc
+    inc hl
+    ld a,(hl)
+    jr rx_nl
+rx_nd:
+    pop hl
+    jr rx_adv
+rx_plain:
+    call rx_putc
+rx_adv:
+    inc hl
+    ld a,(rn_idx)
+    inc a
+    ld (rn_idx),a
+    jr rx1
+rx_end:
+    xor a
+    ld (de),a
+    ret
+
+tn_special:
+    .dw tn_pi,tn_ans,tn_e,tn_ee
+
+; HL = tokens, B = cursor index (255 none), C = y: draw up to 48 characters on two rows
+ed_render:
+    ld a,b
+    ld (rn_cur),a
+    ld a,c
+    ld (rn_y),a
+    ld de,rbuf
+    push hl
+    ld hl,rbuf+99
+    ld (rn_end),hl
+    pop hl
+    call render_expr
+    ld hl,rbuf
+    ld b,0
+rr1:
+    ld a,(hl)
+    or a
+    jr z,rr2
+    inc hl
+    inc b
+    jr rr1
+rr2:
+    ld a,(rn_w)
+    ld c,a                      ; C = row width
+    add a,a
+    ld d,a                      ; D = 2 * width
+    ld a,b                      ; A = text length
+    ld hl,rbuf
+    cp c
+    jr c,rr_one
+    jr z,rr_one
+    cp d
+    jr c,rr_two
+    jr z,rr_two
+    sub d                       ; keep the last 2*width characters
+    ld e,a
+    ld d,0
+    add hl,de
+rr_two:
+    ld de,rrow
+    ld a,(rn_w)
+    ld b,a
+rr3:
+    ld a,(hl)
+    ld (de),a
+    inc hl
+    inc de
+    djnz rr3
+    xor a
+    ld (de),a
+    push hl
+    ld hl,rrow
+    ld a,(rn_y)
+    ld c,a
+    ld a,(rn_col)
+    ld b,a
+    call S_PUTS
+    pop hl
+    ld a,(rn_y)
+    add a,6
+    ld c,a
+    ld a,(rn_col)
+    ld b,a
+    jp S_PUTS
+rr_one:
+    ld a,(rn_y)
+    ld c,a
+    ld a,(rn_col)
+    ld b,a
+    jp S_PUTS

@@ -1,0 +1,250 @@
+; =============================================================================
+; Power management (Silver Edition).
+;  * nothing ever spins: every wait is HALT through the preemptive scheduler's idle task
+;  * 3 battery profiles (4xAAA alkaline / NiMH / Li-ion) shape contrast and sleep policy
+;  * battery level: port $02 bit0 probed at the thresholds selectable through port $04 bits 6-7
+;  * deep sleep: LCD off, timers masked, only ON key + link activity armed, low-power HALT
+; =============================================================================
+
+; LCD command = $C0 + value; a real panel is only readable from about 40 up (TI-OS sends 24 + its 0..39 setting; KnightOS uses 52), so the bases are
+; 24 above the 0..39 scale this table was first written in.
+prof_table:                     ; base contrast, minutes per +1 creep (0 = none), creep max, low-battery boost
+    .db 48,20,8,4               ; 0: 4xAAA alkaline 6.0 V -> 4.2 V (voltage sags -> contrast creeps up)
+    .db 50,0,0,3                ; 1: 4xAAA NiMH 4.8 V (flat curve, cliff at the end)
+    .db 58,0,0,3                ; 2: Li-ion / Li-Po 3.7-4.2 V direct (LCD booster starved)
+
+power_apply:                    ; recompute contrast and send it to the LCD
+    push af
+    push bc
+    push de
+    push hl
+    ld a,(s_profile)
+    cp 3
+    jr c,power_apply_p
+    xor a
+power_apply_p:
+    add a,a
+    add a,a
+    ld e,a
+    ld d,0
+    ld hl,prof_table
+    add hl,de
+    ld b,(hl)                   ; base
+    inc hl
+    ld c,(hl)                   ; creep step (minutes)
+    inc hl
+    ld d,(hl)                   ; creep max
+    inc hl
+    ld e,(hl)                   ; low battery boost
+    ld a,c
+    or a
+    jr z,power_apply_nc
+    ld a,(v_minutes)
+    ld h,0
+power_apply_dv:
+    cp c
+    jr c,power_apply_dd
+    sub c
+    inc h
+    jr power_apply_dv
+power_apply_dd:
+    ld a,h
+    cp d
+    jr c,power_apply_ck
+    ld a,d
+power_apply_ck:
+    add a,b
+    ld b,a
+power_apply_nc:
+    ld a,(v_flags)
+    bit F_LOWBAT,a
+    jr z,power_apply_nl
+    ld a,b
+    add a,e
+    ld b,a
+power_apply_nl:
+    ld a,(s_cadj)               ; user trim: 8 = neutral
+    sub 8
+    add a,b
+    bit 7,a
+    jr z,power_apply_pos
+    xor a
+power_apply_pos:
+    cp 64
+    jr c,power_apply_lim
+    ld a,63
+power_apply_lim:
+    ld (v_contrast),a
+    or LCD_CONTR
+    call lcd_cmd
+    pop hl
+    pop de
+    pop bc
+    pop af
+    ret
+
+; battery_read: probe port $02 bit0 at the 4 thresholds (port $04 bits 6-7).  3 = full ... 0 = low.
+battery_read:
+    push bc
+    ld b,3
+battery_read_l:
+    ld a,b
+    rrca
+    rrca                        ; threshold -> bits 7..6
+    or TMR_SLOW
+    out (P_MEMMAP),a
+    nop
+    nop
+    nop
+    nop
+    in a,(P_STATUS)
+    bit 0,a
+    jr nz,battery_read_ok
+    dec b
+    jp p,battery_read_l
+    xor a
+    jr battery_read_x
+battery_read_ok:
+    ld a,b
+    cp 3
+    jr z,battery_read_x
+    cp 2
+    jr z,battery_read_x
+    inc a                       ; threshold 1 -> level 2, threshold 0 -> level 1
+battery_read_x:
+    ld c,a
+    ld a,TMR_SLOW
+    out (P_MEMMAP),a            ; back to the normal map/timer value
+    ld a,c
+    pop bc
+    ld (v_batlvl),a
+    ret
+
+battery_poll:                   ; update level + low flag; re-apply contrast on change
+    call battery_read
+    ld c,a
+    ld a,(v_flags)
+    ld b,a
+    ld a,c
+    or a
+    ld a,b
+    jr nz,battery_poll_good
+    set F_LOWBAT,a
+    jr battery_poll_st
+battery_poll_good:
+    res F_LOWBAT,a
+battery_poll_st:
+    ld (v_flags),a
+    xor b
+    and 1<<F_LOWBAT
+    ret z
+    jp power_apply
+
+power_task:
+    ld bc,TICK_HZ               ; ~1 second
+    call task_sleep
+    ld a,(v_pcount)
+    inc a
+    ld (v_pcount),a
+    ld b,a
+    and 3                       ; every 4 s: battery
+    jr nz,power_task_c
+    call battery_poll
+power_task_c:
+    ld a,(v_esp)                ; ESP32 idle supervision
+    or a
+    jr z,power_task_m
+    ld hl,(v_espidle)
+    inc hl
+    ld (v_espidle),hl
+    ld a,(s_espsleep)           ; limit = value * 10 seconds
+    ld e,a
+    ld d,0
+    ld b,9
+    ld hl,0
+power_task_x:
+    add hl,de
+    djnz power_task_x
+    add hl,de                   ; HL = value * 10
+    ex de,hl
+    ld hl,(v_espidle)
+    or a
+    sbc hl,de
+    jr c,power_task_m
+    ld hl,0
+    ld (v_espidle),hl
+    ld hl,EV_ESPSLP
+    call event_post
+power_task_m:
+    ld a,(v_pcount)
+    cp 60
+    jr c,power_task_i
+    xor a
+    ld (v_pcount),a
+    ld a,(v_minutes)
+    inc a
+    jr z,power_task_nm
+    ld (v_minutes),a
+power_task_nm:
+    call power_apply            ; discharge-curve contrast compensation
+power_task_i:
+    ld a,(s_sleepto)
+    ld b,a
+    ld a,(v_flags)
+    bit F_LOWBAT,a
+    jr z,power_task_n
+    ld a,b
+    cp 21
+    jr c,power_task_n
+    ld b,20                     ; low battery: sleep sooner
+power_task_n:
+    ld a,(v_idle)
+    cp b
+    jr c,power_task
+    ld a,(v_flags)
+    set F_WANTSLEEP,a
+    ld (v_flags),a
+    jr power_task
+
+power_sleep:                    ; deep sleep (called from the UI task)
+    push af
+    push bc
+    push de
+    push hl
+    ld a,(v_flags)
+    res F_WANTSLEEP,a
+    res F_ONKEY,a
+    res F_LINK,a
+    ld (v_flags),a
+    call link_esp_sleep         ; tell the ESP32 to go to deep sleep too (if awake)
+    ld a,LCD_OFF
+    call lcd_cmd
+    di
+    ld a,INT_SLEEP
+    ld (v_runmask),a
+    out (P_INTMASK),a           ; timers off, ON + link armed, low-power-on-HALT
+    ei
+power_sleep_h:
+    halt                        ; clock stops here until ON or link activity
+    ld a,(v_flags)
+    and (1<<F_ONKEY)|(1<<F_LINK)
+    jr z,power_sleep_h
+    di
+    ld a,INT_RUN
+    ld (v_runmask),a
+    out (P_INTMASK),a
+    ei
+    ld a,LCD_ON
+    call lcd_cmd
+    call power_apply
+    call lcd_blit
+    xor a
+    ld (v_idle),a
+    ld hl,(v_sleeps)
+    inc hl
+    ld (v_sleeps),hl
+    pop hl
+    pop de
+    pop bc
+    pop af
+    ret

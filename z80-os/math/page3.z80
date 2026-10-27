@@ -1,0 +1,70 @@
+; =============================================================================
+; Flash page 3: math library + calculator / grapher apps (banked into $4000..$7FFF).
+; The jump table at the start is the stable entry list (see tools/gen_mathjt.py).
+; =============================================================================
+#include "kernel/superos.inc"
+#include "kernel/sys.inc"
+#include "mstrings.inc"
+#include "math/mathram.inc"
+#include "math/tokens.inc"
+.org $4000
+M_JT:
+    jp fx_add                   ; $4000
+    jp fx_sub                   ; $4003
+    jp fx_mul                   ; $4006
+    jp fx_div                   ; $4009
+    jp fx_cmp                   ; $400C
+    jp fx_sqrt                  ; $400F
+    jp fx_floor                 ; $4012
+    jp fx_trunc                 ; $4015
+    jp fx_from_i16              ; $4018
+    jp fx_to_i16                ; $401B
+    jp fx_neg                   ; $401E
+    jp fx_abs                   ; $4021
+    jp fx_exp                   ; $4024
+    jp fx_ln                    ; $4027
+    jp fx_log10                 ; $402A
+    jp fx_log2                  ; $402D
+    jp fx_exp10                 ; $4030
+    jp fx_pow                   ; $4033
+    jp fx_sin                   ; $4036
+    jp fx_cos                   ; $4039
+    jp fx_tan                   ; $403C
+    jp fx_atan                  ; $403F
+    jp fx_asin                  ; $4042
+    jp fx_acos                  ; $4045
+    jp fx_sinh                  ; $4048
+    jp fx_cosh                  ; $404B
+    jp fx_tanh                  ; $404E
+    jp fx_asinh                 ; $4051
+    jp fx_acosh                 ; $4054
+    jp fx_atanh                 ; $4057
+    jp fx_fact                  ; $405A
+    jp fx_mod                   ; $405D
+    jp fx_tostr                 ; $4060
+    jp fx_fromstr               ; $4063
+    jp ev_eval                  ; $4066
+    jp ev_evald                 ; $4069
+    jp fx_init                  ; $406C
+    jp fx_stvar                 ; $406F
+    jp calc_main                ; $4072
+    jp graph_main               ; $4075
+    jp cas_main                 ; $4078
+    jp casstep_main             ; $407B
+    jp conv_main                ; $407E
+    jp aiplot_main              ; $4081
+    jp const_store              ; $4084
+M_JT_END:
+#include "math/fp.z80"
+#include "math/fn.z80"
+#include "math/conv.z80"
+#include "math/expr.z80"
+#include "math/edit.z80"
+#include "math/calc.z80"
+#include "math/graph.z80"
+#include "math/cas.z80"
+#include "math/convert.z80"
+#include "mstrings.z80"
+#include "calckeys.inc"
+#include "units.inc"
+#include "consts.inc"

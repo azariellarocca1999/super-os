@@ -1,0 +1,472 @@
+; =============================================================================
+; OTA package manager: packages travel PC -> (Wi-Fi) -> ESP32 -> (SuperLink) -> calculator flash.
+;   1 PC packages : list what the ESP32 holds, pick one, download (ZX0 stream) and install into the flash store
+;   2 Installed   : list the flash store, ENTER runs the program at userMem, DEL deletes it
+;   3 Erase all   : erase the package store sectors
+;   4 Receive     : ask the ESP32 to open its HTTP upload window (tools/ota_push.py from the PC)
+; =============================================================================
+OTA_MAX     .equ 5200           ; a program must fit between userMem ($9D95) and the task stacks ($B000)
+PKGNAME     .equ WIFIBUF        ; 16 B: name of the chosen package
+IDXMAP      .equ WIFIBUF+32     ; 10 B: directory index of each displayed line
+PKGTYPE     .equ WIFIBUF+20     ; 1 Z80 program, 2 CHIP-8 game (third field '8' of a list line)
+
+app_ota:
+    ld hl,STR_APP_OTA
+    call ui_begin_id
+    ld hl,STR_O_REMOTE
+    call tr
+    ld b,0
+    ld c,16
+    call S_PUTS
+    ld hl,STR_O_INST
+    call tr
+    ld b,0
+    ld c,24
+    call S_PUTS
+    ld hl,STR_O_FORMAT
+    call tr
+    ld b,0
+    ld c,32
+    call S_PUTS
+    ld hl,STR_O_RECV
+    call tr
+    ld b,0
+    ld c,40
+    call S_PUTS
+    call ui_wait_any
+    cp K_1
+    jp z,ota_remote
+    cp K_2
+    jp z,ota_installed
+    cp K_3
+    jp z,ota_format
+    cp K_4
+    jp z,ota_recv
+    ret
+
+; ---- 1: remote packages -------------------------------------------------------------------------------
+ota_remote:
+    call show_wait
+    xor a
+    ld (INBUF),a                ; payload [0] = list
+    ld hl,INBUF
+    ld b,1
+    ld a,CMD_STORE
+    call S_LINK_REQUEST
+    jp c,net_fail
+    call inflate_reply
+    ld hl,STR_O_REMOTE
+    call tr
+    call list_pick              ; A = chosen line (0-based), CF = cancelled
+    ret c
+    push af
+    call list_line_type         ; PKGTYPE
+    pop af
+    call list_line_name         ; PKGNAME = name of that line
+    ret c
+    call show_wait
+    ld hl,PKGNAME               ; payload [1][name]
+    ld de,INBUF+1
+    ld b,1
+ota_remote_cp:
+    ld a,(hl)
+    or a
+    jr z,ota_remote_go
+    ld (de),a
+    inc hl
+    inc de
+    inc b
+    jr ota_remote_cp
+ota_remote_go:
+    ld a,1
+    ld (INBUF),a
+    ld hl,INBUF
+    ld a,CMD_STORE
+    call S_LINK_REQUEST
+    jp c,net_fail
+    call inflate_reply          ; package bytes -> TEXTBUF, DE = end
+    ld hl,(v_vend)
+    ld de,TEXTBUF
+    or a
+    sbc hl,de
+    ld b,h
+    ld c,l                      ; BC = package length
+    ld hl,OTA_MAX
+    or a
+    sbc hl,bc
+    jr nc,ota_remote_fit
+    ld hl,STR_O_BIG
+    jp ui_message
+ota_remote_fit:
+    ld hl,PKGNAME
+    ld de,TEXTBUF
+    ld a,(PKGTYPE)              ; 1 = Z80 program, 2 = CHIP-8 game
+    call S_PKG_INSTALL
+    jr c,ota_fail
+    ld hl,STR_O_OK
+    jp ui_message
+ota_fail:
+    ld hl,STR_O_FAIL
+    jp ui_message
+
+; HL = title; the list is the text in TEXTBUF ("name|size" lines).  -> A = line (0..8), CF = cancelled
+list_pick:
+    call ui_begin
+    ld hl,TEXTBUF
+    ld a,'1'
+    ld (v_ui1),a
+    ld a,14
+    ld (v_ui0),a
+list_pick_l:
+    ld a,(hl)
+    or a
+    jr z,list_pick_done
+    ld a,(v_ui1)
+    cp '9'+1
+    jr nc,list_pick_done
+    push hl
+    ld b,0
+    ld a,(v_ui0)
+    ld c,a
+    ld a,(v_ui1)
+    call S_PUTCHAR
+    pop hl
+    ld b,2
+list_pick_c:
+    ld a,(hl)
+    or a
+    jr z,list_pick_done
+    inc hl
+    cp 10
+    jr z,list_pick_n
+    cp '|'
+    jr nz,list_pick_p
+    ld a,' '
+list_pick_p:
+    ld d,a                      ; character
+    push hl
+    push bc
+    ld a,(v_ui0)
+    ld c,a                      ; y
+    ld a,d
+    call S_PUTCHAR
+    pop bc
+    pop hl
+    inc b
+    jr list_pick_c
+list_pick_n:
+    ld a,(v_ui1)
+    inc a
+    ld (v_ui1),a
+    ld a,(v_ui0)
+    add a,6
+    ld (v_ui0),a
+    jr list_pick_l
+list_pick_done:
+    ld a,(v_ui1)
+    cp '1'
+    jr nz,list_pick_key
+    ld hl,STR_O_NONE
+    call tr
+    ld b,0
+    ld c,22
+    call S_PUTS
+list_pick_key:
+    call ui_wait_any
+    cp K_CLEAR
+    jr z,list_pick_cancel
+    cp K_ON
+    jr z,list_pick_cancel
+    ld b,a
+    ld hl,list_keys
+    ld c,0
+list_pick_f:
+    ld a,(hl)
+    inc hl
+    cp b
+    jr z,list_pick_got
+    inc c
+    ld a,c
+    cp 9
+    jr c,list_pick_f
+    jr list_pick_key
+list_pick_got:
+    ld a,'1'
+    add a,c
+    ld b,a
+    ld a,(v_ui1)
+    cp b
+    jr c,list_pick_key          ; beyond the number of lines shown
+    ld a,c
+    or a
+    ret
+list_pick_cancel:
+    scf
+    ret
+list_keys: .db K_1,K_2,K_3,K_4,K_5,K_6,K_7,K_8,K_9
+
+; A = line index in TEXTBUF -> PKGTYPE (2 when the line is "NAME|size|8", else 1)
+list_line_type:
+    ld b,a
+    ld hl,TEXTBUF
+llt_skip:
+    ld a,b
+    or a
+    jr z,llt_at
+llt_chr:
+    ld a,(hl)
+    or a
+    jr z,llt_def
+    inc hl
+    cp 10
+    jr nz,llt_chr
+    dec b
+    jr llt_skip
+llt_at:
+    ld c,0
+llt_f:
+    ld a,(hl)
+    inc hl
+    or a
+    jr z,llt_def
+    cp 10
+    jr z,llt_def
+    cp '|'
+    jr nz,llt_f
+    inc c
+    ld a,c
+    cp 2
+    jr nz,llt_f
+    ld a,(hl)
+    cp '8'
+    jr nz,llt_def
+    ld a,2
+    jr llt_set
+llt_def:
+    ld a,1
+llt_set:
+    ld (PKGTYPE),a
+    ret
+
+; A = line index in TEXTBUF -> PKGNAME (name up to '|', 8 chars max).  CF = line missing
+list_line_name:
+    ld b,a
+    ld hl,TEXTBUF
+list_line_skip:
+    ld a,b
+    or a
+    jr z,list_line_at
+list_line_chr:
+    ld a,(hl)
+    or a
+    scf
+    ret z
+    inc hl
+    cp 10
+    jr nz,list_line_chr
+    dec b
+    jr list_line_skip
+list_line_at:
+    ld de,PKGNAME
+    ld b,8
+list_line_cp:
+    ld a,(hl)
+    or a
+    jr z,list_line_end
+    cp '|'
+    jr z,list_line_end
+    cp 10
+    jr z,list_line_end
+    ld (de),a
+    inc hl
+    inc de
+    djnz list_line_cp
+list_line_end:
+    xor a
+    ld (de),a
+    or a
+    ret
+
+; ---- 2: installed packages -------------------------------------------------------------------------------
+ota_installed:
+    xor a
+    call S_RAM_PAGE
+    ld hl,TEXTBUF
+    ld (v_wptr),hl
+    ld de,IDXMAP
+    ld b,0                      ; B = directory index, C = lines emitted
+    ld c,0
+ota_inst_scan:
+    push bc
+    push de
+    ld a,b
+    call S_PKG_ENTRY
+    pop de
+    pop bc
+    jr c,ota_inst_end
+    ld a,(PKGREC+14)            ; flags: bit0 = active
+    and 1
+    jr z,ota_inst_next
+    ld a,c
+    cp 9
+    jr nc,ota_inst_end
+    push bc
+    ld a,b
+    ld (de),a                   ; IDXMAP[c] = index
+    inc de
+    push de
+    ld hl,PKGREC                ; "NAME|len\n" into TEXTBUF
+    ld de,(v_wptr)
+    ld b,8
+ota_inst_nm:
+    ld a,(hl)
+    cp ' '
+    jr z,ota_inst_nme
+    or a
+    jr z,ota_inst_nme
+    ld (de),a
+    inc hl
+    inc de
+    djnz ota_inst_nm
+ota_inst_nme:
+    ld a,'|'
+    ld (de),a
+    inc de
+    ld hl,(PKGREC+11)           ; length in decimal
+    call ota_dec
+    ld a,(PKGREC+PK_TYPE)       ; CHIP-8 games are marked "|8"
+    cp 2
+    jr nz,ota_inst_nt
+    ld a,'|'
+    ld (de),a
+    inc de
+    ld a,'8'
+    ld (de),a
+    inc de
+ota_inst_nt:
+    ld a,10
+    ld (de),a
+    inc de
+    ld (v_wptr),de
+    pop de
+    pop bc
+    inc c
+ota_inst_next:
+    inc b
+    ld a,b
+    cp 255
+    jr c,ota_inst_scan
+ota_inst_end:
+    ld hl,(v_wptr)
+    ld (hl),0
+    ld hl,STR_O_INST
+    call tr
+    call list_pick
+    ret c
+    ld c,a
+    ld b,0
+    ld hl,IDXMAP
+    add hl,bc
+    ld a,(hl)                   ; directory index
+    ld (v_ui3),a
+    ld hl,STR_APP_OTA
+    call ui_begin_id
+    ld hl,STR_O_RUNDEL
+    call tr
+    ld b,0
+    ld c,26
+    call S_PUTS
+    call ui_wait_any
+    cp K_DEL
+    jr z,ota_inst_del
+    cp K_ENTER
+    ret nz
+    ld a,(v_ui3)
+    call S_PKG_ENTRY
+    ld a,(PKGREC+PK_TYPE)
+    ld (PKGTYPE),a
+    ld a,(v_ui3)
+    ld de,USERMEM
+    call S_PKG_LOAD             ; BC = length
+    ret c
+    ld a,(PKGTYPE)
+    cp 2
+    jp nz,S_RUN_USERPROG
+    ld hl,USERMEM               ; CHIP-8 game: the interpreter in flash page 5 runs it from RAM
+    ld ix,C8_RUN_RAM
+    ld a,5
+    jp S_CALL_PAGEX
+ota_inst_del:
+    ld a,(v_ui3)
+    call S_PKG_DELETE
+    ld hl,STR_O_DONE
+    jp ui_message
+
+ota_dec:                        ; HL = value -> ASCII decimal at (DE), DE advanced
+    push bc
+    xor a
+    ld (v_ui2),a
+    ld bc,-10000
+    call ota_dec_d
+    ld bc,-1000
+    call ota_dec_d
+    ld bc,-100
+    call ota_dec_d
+    ld bc,-10
+    call ota_dec_d
+    ld a,l
+    add a,'0'
+    ld (de),a
+    inc de
+    pop bc
+    ret
+ota_dec_d:
+    ld a,'0'-1
+ota_dec_l:
+    inc a
+    add hl,bc
+    jr c,ota_dec_l
+    sbc hl,bc
+    cp '0'
+    jr nz,ota_dec_e
+    ld a,(v_ui2)
+    or a
+    ret z                       ; leading zero: skip
+    ld a,'0'
+ota_dec_e:
+    ld (de),a
+    inc de
+    ld a,1
+    ld (v_ui2),a
+    ret
+
+; ---- 3: erase all --------------------------------------------------------------------------------------------
+ota_format:
+    ld hl,STR_APP_OTA
+    call ui_begin_id
+    ld hl,STR_O_CONFIRM
+    call tr
+    ld b,0
+    ld c,26
+    call S_PUTS
+    call ui_wait_any
+    cp K_ENTER
+    ret nz
+    call show_wait
+    call S_PKG_FORMAT
+    jp c,ota_fail
+    ld hl,STR_O_DONE
+    jp ui_message
+
+; ---- 4: receive from the PC ----------------------------------------------------------------------------------------
+ota_recv:
+    call show_wait
+    ld a,120                    ; upload window in seconds
+    ld (INBUF),a
+    ld hl,INBUF
+    ld b,1
+    ld a,CMD_OTA
+    call S_LINK_REQUEST
+    jp c,net_fail
+    call inflate_reply
+    jp viewer

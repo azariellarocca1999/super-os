@@ -1,0 +1,39 @@
+; =============================================================================
+; Super-OS -- flash page 1: user interface.  Runs at $4000 (bank A).
+; Hardware access only through the page-0 syscall table (kernel/sys.inc).
+; =============================================================================
+#include "kernel/superos.inc"
+#include "kernel/sys.inc"
+#include "strings.inc"
+#include "mathjt.inc"
+#include "p4jt.inc"
+#include "p5jt.inc"
+#include "autogame.inc"      ; generated: #define AUTOGAME 0 (normal) or a page-5 entry point (tests boot straight into a game)
+
+.org $4000
+ui_entry:
+    ei
+    xor a
+    call S_RAM_PAGE
+    call ui_setlang
+    call ui_crashreport
+#if AUTOGAME
+    ld ix,AUTOGAME
+    ld a,5
+    call S_CALL_PAGEX
+#endif
+    jp ui_home
+
+#include "ui/common.z80"
+#include "ui/home.z80"
+#include "ui/system.z80"
+#include "ui/sysapps.z80"
+#include "ui/netapps.z80"
+#include "ui/ota.z80"
+#include "ui/diag.z80"
+#include "ui/mathapps.z80"
+#include "strings.z80"
+
+.echo "page1 end = "
+.echo $
+.echo "\n"

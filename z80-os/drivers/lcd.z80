@@ -1,0 +1,143 @@
+; =============================================================================
+; T6A04 LCD driver for the Silver Edition @ 15 MHz.
+; The panel needs >= 10 us between accesses = 150 T-states at 15 MHz.  No status
+; polling: every access is paced by counted T-states (works on all panel revisions).
+; =============================================================================
+
+lcd_cmd:                        ; A = command. Preserves AF/BC.  >= 150 T from OUT to next access
+    out (P_LCDCMD),a            ; 11
+    push bc                     ; 11
+    ld b,9                      ; 7
+lcd_cmd_d:
+    djnz lcd_cmd_d              ; 8 x 13 + 8 = 112
+    pop bc                      ; 10
+    ret                         ; 10   (+ call 17 from the caller = 178)
+
+lcd_init:
+    ld a,LCD_8BIT
+    call lcd_cmd
+    ld a,LCD_XINC               ; X auto-increment: each data write moves one row down
+    call lcd_cmd
+    ld a,LCD_ON
+    call lcd_cmd
+    ld a,$17                    ; power / bias commands sent by KnightOS on a real TI-83+SE (05 01 03 17 0B, then contrast)
+    call lcd_cmd
+    ld a,$0B
+    call lcd_cmd
+    call power_apply            ; contrast from the battery profile
+    call gfx_clear
+    jp lcd_blit
+
+; ---- blit GBUF1 (12 bytes x 64 rows, row-major) column-wise -----------------------------------
+; Inner loop: 7+11+11+ 6*19 (three EX (SP),HL pairs x2) +13 = 156 T per byte (>= 150).
+lcd_blit:
+    push hl
+    ld hl,GBUF1
+    call lcd_blit_hl
+    pop hl
+    ret
+
+lcd_blit_hl:                    ; HL = 768-byte frame buffer (TI programs use plotSScreen)
+    push af
+    push bc
+    push de
+    push hl
+    ld a,LCD_ROW
+    call lcd_cmd
+    ld a,LCD_COL
+    ld (v_tmp0),a
+    ld de,12
+lcd_blit_c:
+    ld a,(v_tmp0)
+    call lcd_cmd
+    push hl
+    ld b,64
+lcd_blit_r:
+    ld a,(hl)                   ; 7
+    out (P_LCDDATA),a           ; 11
+    add hl,de                   ; 11
+    ex (sp),hl                  ; 19  x6 = 114: HL parked on the stack and back
+    ex (sp),hl
+    ex (sp),hl
+    ex (sp),hl
+    ex (sp),hl
+    ex (sp),hl
+    djnz lcd_blit_r             ; 13
+    pop hl
+    inc hl
+    ld a,(v_tmp0)
+    inc a
+    ld (v_tmp0),a
+    cp LCD_COL+12
+    jr nz,lcd_blit_c
+    pop hl
+    pop de
+    pop bc
+    pop af
+    ret
+
+; ---- 4-level gray: 3-phase temporal modulation (GBUF1 = plane H, GBUF2 = plane L) --------------
+;   level = number of lit phases:  phase1 H|L   phase2 H   phase3 H&L
+gray_cycle:
+    push af
+    push bc
+    push de
+    push hl
+    ld a,1
+    ld (v_graysub),a
+gray_cycle_ph:
+    ld hl,GBUF1
+    ld a,LCD_ROW
+    call lcd_cmd
+    ld a,LCD_COL
+    ld (v_tmp0),a
+gray_cycle_gc:
+    ld a,(v_tmp0)
+    call lcd_cmd
+    push hl
+    ld b,64
+gray_cycle_gr:
+    push bc
+    ld de,GBUF2-GBUF1
+    ld c,(hl)                   ; H
+    add hl,de
+    ld a,(hl)                   ; L
+    ld d,a
+    ld a,(v_graysub)
+    cp 2
+    ld a,c
+    jr z,gray_cycle_p2
+    jr nc,gray_cycle_p3
+    or d                        ; phase 1: H|L
+    jr gray_cycle_out
+gray_cycle_p2:
+    jr gray_cycle_out           ; phase 2: H
+gray_cycle_p3:
+    and d                       ; phase 3: H&L
+gray_cycle_out:
+    out (P_LCDDATA),a
+    ld de,(GBUF1-GBUF2)+12
+    add hl,de
+    pop bc
+    ex (sp),hl
+    ex (sp),hl
+    ex (sp),hl
+    ex (sp),hl
+    djnz gray_cycle_gr
+    pop hl
+    inc hl
+    ld a,(v_tmp0)
+    inc a
+    ld (v_tmp0),a
+    cp LCD_COL+12
+    jr nz,gray_cycle_gc
+    ld a,(v_graysub)
+    inc a
+    ld (v_graysub),a
+    cp 4
+    jr nz,gray_cycle_ph
+    pop hl
+    pop de
+    pop bc
+    pop af
+    ret

@@ -1,0 +1,36 @@
+# generated / downloaded (scripts/1_install_toolchains.ps1 and scripts/2_build_all.ps1 recreate them)
+build/
+tools/bin/
+tools/src/
+tools/keys/
+esp32-firmware/.pio/
+.pio/
+.vscode/
+__pycache__/
+*.pyc
+*.log
+
+# release artifacts go to GitHub Releases, not into git
+dist/*
+!dist/.gitkeep
+
+# local agent state
+.claude/settings.local.json
+.claude/projects/
+emulators-and-roms/
+
+# OS junk and anything that might be a ROM or a TI file
+Thumbs.db
+.DS_Store
+*.tig
+*.8xu
+*.8Xu
+*.rom
+*.8xk
+!games/roms/dmg-acid2.gb
+
+# scraped third-party wiki pages used while developing (CC BY-NC-SA, not redistributed)
+docs/wikiti/
+
+# assembled by scripts/make_release.ps1
+release/

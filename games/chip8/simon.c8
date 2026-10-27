@@ -1,0 +1,164 @@
+; SIMON -- original memory game.  Watch the panels flash, then repeat the sequence with 2 (up) 4 (left) 6 (right) 8 (down).
+; v0 transfer, v1 sequence length, v2 playback/input index, v3 random, v4 panel, v5..v9 temps, va frame temp, vb/vc panel x,y
+seq .equ 0x600
+start:
+    cls
+    ld v4,0
+panels:
+    call panel
+    ld i,outl
+    drw vb,vc,8
+    add vb,8
+    drw vb,vc,8
+    add v4,1
+    se v4,4
+    jp panels
+    ld v1,0
+round:
+    ld va,40
+    call wait
+    rnd v3,3
+    ld i,seq
+    add i,v1
+    ld v0,v3
+    ld [i],v0
+    add v1,1
+    ld v2,0
+play:
+    ld i,seq
+    add i,v2
+    ld v0,[i]
+    ld v4,v0
+    call flash
+    add v2,1
+    se v2,v1
+    jp play
+    ld v2,0
+input:
+    call getkey
+    call flash
+    ld i,seq
+    add i,v2
+    ld v0,[i]
+    se v0,v4
+    jp lose
+    add v2,1
+    se v2,v1
+    jp input
+    se v1,12
+    jp round
+    ld v4,0                     ; win: flash everything twice, then start over
+    ld v5,2
+winl:
+    ld v4,0
+w4:
+    call flash
+    add v4,1
+    se v4,4
+    jp w4
+    add v5,0xFF
+    se v5,0
+    jp winl
+    jp start
+lose:
+    ld v5,3                     ; error: flash the whole board three times
+le:
+    ld v4,0
+l4:
+    call lite
+    add v4,1
+    se v4,4
+    jp l4
+    ld va,12
+    call wait
+    ld v4,0
+l5:
+    call lite
+    add v4,1
+    se v4,4
+    jp l5
+    ld va,12
+    call wait
+    add v5,0xFF
+    se v5,0
+    jp le
+    jp start
+wait:                           ; wait va ticks (1/60 s)
+    ld dt,va
+w1:
+    ld va,dt
+    se va,0
+    jp w1
+    ret
+panel:                          ; v4 = panel -> vb, vc = its top left corner
+    ld i,ptx
+    add i,v4
+    ld v0,[i]
+    ld vb,v0
+    ld i,pty
+    add i,v4
+    ld v0,[i]
+    ld vc,v0
+    ret
+lite:                           ; XOR a solid 16x8 block over the panel v4
+    call panel
+    ld i,blk
+    drw vb,vc,8
+    add vb,8
+    drw vb,vc,8
+    ret
+flash:
+    call lite
+    ld va,18
+    call wait
+    call lite
+    ld va,8
+    call wait
+    ret
+getkey:                         ; -> v4 = panel of the key pressed; waits for the release afterwards
+gk:
+    ld va,2
+    skp va
+    jp k4
+    ld v4,0
+    jp rel
+k4:
+    ld va,4
+    skp va
+    jp k6
+    ld v4,1
+    jp rel
+k6:
+    ld va,6
+    skp va
+    jp k8
+    ld v4,2
+    jp rel
+k8:
+    ld va,8
+    skp va
+    jp gk
+    ld v4,3
+rel:
+    ld va,dt
+    ld va,2
+    sknp va
+    jp rel
+    ld va,4
+    sknp va
+    jp rel
+    ld va,6
+    sknp va
+    jp rel
+    ld va,8
+    sknp va
+    jp rel
+    ret
+ptx:
+    db 24,8,40,24
+pty:
+    db 2,12,12,22
+outl:
+    db 0xFF,0x81,0x81,0x81,0x81,0x81,0x81,0xFF
+blk:
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF

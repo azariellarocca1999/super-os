@@ -1,0 +1,22 @@
+name: static checks
+
+# The full test battery needs the Windows toolchain (spasm-ng, Tilem's core) and runs locally with scripts/2_build_all.ps1 -Test.
+# These checks need only Python and catch the mistakes that are silent in the assembler.
+on:
+  push:
+  pull_request:
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: UI strings fit the 24-column screen
+        run: python tools/audit_text.py
+      - name: no duplicated assembler names
+        run: python tools/check_labels.py
+      - name: python sources compile
+        run: python -m compileall -q tools bridge_pc cas games

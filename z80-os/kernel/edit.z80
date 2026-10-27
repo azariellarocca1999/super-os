@@ -1,0 +1,579 @@
+; =============================================================================
+; Text entry: T9 predictive (ES+EN dictionary, ZX0 in flash), ABC (TI alpha layout) and 123 modes.
+;  ALPHA cycles T9 -> ABC -> 123.  2ND toggles case (ABC).  DEL backspace.  ENTER accepts.  CLEAR cancels.
+;  Result: EDBUF / v_inlen.   A = flags on entry (b0: MODE toggles the AI model, b1: start in ABC)
+;  CF = cancelled.  The dictionary lives in the $C000 window (RAM page 0).
+; =============================================================================
+ED_MAX      .equ 90
+
+text_edit:                      ; HL = title string pointer, A = flags
+    ld (v_edflags),a
+    push hl
+    xor a
+    call ram_page             ; $C000 window = RAM page 0 (dictionary, text buffers)
+    ld a,(v_dictok)
+    or a
+    jr nz,edit_have
+    ld hl,fn_dict
+    ld de,DICTBUF
+    call fs_load
+    jr c,edit_have
+    ld hl,DICTBUF
+    add hl,bc
+    xor a
+    ld (hl),a
+    inc a
+    ld (v_dictok),a
+edit_have:
+    pop hl
+    ld (v_edtitle),hl
+    xor a
+    ld (v_inlen),a
+    ld (v_t9len),a
+    ld (v_t9cnt),a
+    ld (v_t9sel),a
+    ld (EDBUF),a
+    ld (v_edmode),a
+    ld (v_edcase),a
+    ld a,(v_edflags)
+    bit 1,a
+    jr z,edit_loop
+    ld a,1
+    ld (v_edmode),a
+edit_loop:
+    call edit_draw
+    call wait_key
+    cp K_CLEAR
+    jp z,edit_cancel
+    cp K_ENTER
+    jp z,edit_accept
+    cp K_DEL
+    jp z,edit_del
+    cp K_ALPHA
+    jr z,edit_mode
+    cp K_MODE
+    jr z,edit_model
+    cp K_2ND
+    jr z,edit_case
+    ld b,a
+    ld a,(v_edmode)
+    or a
+    ld a,b
+    jp z,edit_t9key
+    ld hl,abc_table
+    ld a,(v_edmode)
+    cp 1
+    jr z,edit_tab
+    ld hl,num_table
+edit_tab:
+    ld a,b
+edit_tab_l:
+    ld c,(hl)
+    inc hl
+    ld d,(hl)
+    inc hl
+    ld e,a
+    ld a,c
+    or a
+    jp z,edit_loop              ; end of table
+    cp e
+    ld a,e
+    jr nz,edit_tab_l
+    ld a,d                      ; ASCII for this key
+    ld c,a
+    ld a,(v_edmode)
+    cp 1
+    ld a,c
+    jr nz,edit_put
+    ld a,(v_edcase)             ; ABC: upper case when requested
+    or a
+    ld a,c
+    jr z,edit_put
+    cp 'a'
+    jr c,edit_put
+    cp 'z'+1
+    jr nc,edit_put
+    sub 32
+edit_put:
+    call edit_putc
+    jp edit_loop
+edit_mode:
+    call t9_commit
+    ld a,(v_edmode)
+    inc a
+    cp 3
+    jr c,edit_ms
+    xor a
+edit_ms:
+    ld (v_edmode),a
+    jp edit_loop
+edit_model:
+    ld a,(v_edflags)
+    bit 0,a
+    jp z,edit_loop
+    ld a,(v_model)
+    xor 1
+    ld (v_model),a
+    jp edit_loop
+edit_case:
+    ld a,(v_edcase)
+    xor 1
+    ld (v_edcase),a
+    jp edit_loop
+edit_cancel:
+    xor a
+    call set_mode
+    scf
+    ret
+edit_accept:
+    call t9_commit
+    ld a,(v_inlen)
+    or a
+    jp z,edit_loop
+    or a
+    ret
+
+edit_putc:                      ; append A to EDBUF
+    ld b,a
+    ld a,(v_inlen)
+    cp ED_MAX
+    ret nc
+    ld e,a
+    ld d,0
+    ld hl,EDBUF
+    add hl,de
+    ld (hl),b
+    inc hl
+    ld (hl),0
+    inc a
+    ld (v_inlen),a
+    ret
+
+edit_del:
+    ld a,(v_t9len)
+    or a
+    jr z,edit_del_txt
+    dec a
+    ld (v_t9len),a
+    xor a
+    ld (v_t9sel),a
+    call t9_find
+    jp edit_loop
+edit_del_txt:
+    ld a,(v_inlen)
+    or a
+    jp z,edit_loop
+    dec a
+    ld (v_inlen),a
+    ld e,a
+    ld d,0
+    ld hl,EDBUF
+    add hl,de
+    ld (hl),0
+    jp edit_loop
+
+; ---- T9 keys ----------------------------------------------------------------------------------------------
+edit_t9key:
+    ld b,a
+    cp K_0
+    jr z,edit_t9space
+    cp K_1
+    jr z,edit_t9dot
+    cp K_RIGHT
+    jr z,edit_t9next
+    cp K_LEFT
+    jr z,edit_t9prev
+    call t9_digit
+    or a
+    jp z,edit_loop
+    ld b,a
+    ld a,(v_t9len)
+    cp 12
+    jp nc,edit_loop
+    ld e,a
+    ld d,0
+    ld hl,T9SEQ
+    add hl,de
+    ld (hl),b
+    inc a
+    ld (v_t9len),a
+    xor a
+    ld (v_t9sel),a
+    call t9_find
+    jp edit_loop
+edit_t9space:
+    call t9_commit
+    ld a,' '
+    call edit_putc
+    jp edit_loop
+edit_t9dot:
+    call t9_commit
+    ld a,'.'
+    call edit_putc
+    ld a,' '
+    call edit_putc
+    jp edit_loop
+edit_t9next:
+    ld a,(v_t9cnt)
+    or a
+    jp z,edit_loop
+    ld b,a
+    ld a,(v_t9sel)
+    inc a
+    cp b
+    jr c,edit_t9ns
+    xor a
+edit_t9ns:
+    ld (v_t9sel),a
+    jp edit_loop
+edit_t9prev:
+    ld a,(v_t9cnt)
+    or a
+    jp z,edit_loop
+    ld b,a
+    ld a,(v_t9sel)
+    or a
+    jr nz,edit_t9pd
+    ld a,b
+edit_t9pd:
+    dec a
+    ld (v_t9sel),a
+    jp edit_loop
+
+t9_commit:                      ; commit the highlighted candidate (or the raw digits)
+    ld a,(v_t9len)
+    or a
+    ret z
+    ld a,(v_t9cnt)
+    or a
+    jr z,t9_commit_raw
+    ld a,(v_t9sel)
+    add a,a
+    ld e,a
+    ld d,0
+    ld hl,T9CAND0
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ex de,hl
+t9_commit_w:
+    ld a,(hl)
+    cp 10
+    jr z,t9_commit_end
+    or a
+    jr z,t9_commit_end
+    push hl
+    call edit_putc
+    pop hl
+    inc hl
+    jr t9_commit_w
+t9_commit_raw:
+    ld a,(v_t9len)
+    ld b,a
+    ld hl,T9SEQ
+t9_commit_r:
+    ld a,(hl)
+    push hl
+    push bc
+    call edit_putc
+    pop bc
+    pop hl
+    inc hl
+    djnz t9_commit_r
+t9_commit_end:
+    xor a
+    ld (v_t9len),a
+    ld (v_t9cnt),a
+    ld (v_t9sel),a
+    ret
+
+t9_digit:                       ; key -> ASCII '2'..'9', 0 if none
+    ld hl,t9_keys
+    ld b,8
+t9_dg:
+    cp (hl)
+    jr z,t9_dgf
+    inc hl
+    inc hl
+    djnz t9_dg
+    xor a
+    ret
+t9_dgf:
+    inc hl
+    ld a,(hl)
+    ret
+t9_keys:
+    .db K_2,'2',K_3,'3',K_4,'4',K_5,'5',K_6,'6',K_7,'7',K_8,'8',K_9,'9'
+t9_map:
+    .db "22233344455566677778889999"
+
+t9_find:                        ; candidates: exact-length words first, then completions
+    xor a
+    ld (v_t9cnt),a
+    ld a,(v_t9len)
+    or a
+    ret z
+    xor a
+    ld (v_pass),a
+t9_pass:
+    ld hl,DICTBUF
+t9_word:
+    ld a,(hl)
+    or a
+    jr z,t9_pass_end
+    ld (v_cptr),hl
+    ld a,(v_t9len)
+    ld b,a
+    ld de,T9SEQ
+t9_cmp:
+    ld a,(hl)
+    cp 'a'
+    jr c,t9_miss
+    cp 'z'+1
+    jr nc,t9_miss
+    sub 'a'
+    push hl
+    ld hl,t9_map
+    ld c,a
+    ld a,l
+    add a,c
+    ld l,a
+    jr nc,t9_cmp_nc
+    inc h
+t9_cmp_nc:
+    ld a,(hl)
+    pop hl
+    ex de,hl
+    cp (hl)
+    ex de,hl
+    jr nz,t9_miss
+    inc hl
+    inc de
+    djnz t9_cmp
+    ld a,(hl)
+    cp 10
+    ld c,1
+    jr z,t9_got
+    ld c,0
+t9_got:
+    ld a,(v_pass)
+    xor 1                       ; pass 0 wants exact-length words, pass 1 completions
+    cp c
+    jr nz,t9_miss_nl
+    ld a,(v_t9cnt)
+    cp 3
+    ret nc
+    add a,a
+    ld e,a
+    ld d,0
+    ld hl,T9CAND0
+    add hl,de
+    ld de,(v_cptr)
+    ld (hl),e
+    inc hl
+    ld (hl),d
+    ld a,(v_t9cnt)
+    inc a
+    ld (v_t9cnt),a
+t9_miss:
+    ld hl,(v_cptr)
+t9_miss_nl:
+    ld a,(hl)
+    inc hl
+    cp 10
+    jr nz,t9_miss_nl
+    jr t9_word
+t9_pass_end:
+    ld a,(v_pass)
+    or a
+    jr nz,t9_fin
+    inc a
+    ld (v_pass),a
+    ld a,(v_t9cnt)
+    cp 3
+    jr c,t9_pass
+t9_fin:
+    ret
+
+; ---- screen -----------------------------------------------------------------------------------------------------
+edit_draw:
+    ld hl,(v_edtitle)
+    call ui_begin
+    call ui_cols
+    ld (v_wcols),a
+    ld hl,EDBUF                 ; typed text, wrapped at the font width
+    xor a
+    ld (v_ui1),a                ; line
+edit_draw_line:
+    ld a,(v_ui1)
+    call ui_line_y
+    ld b,0
+edit_draw_ch:
+    ld a,(hl)
+    or a
+    jr z,edit_draw_pend
+    push hl
+    push bc
+    call putchar
+    pop bc
+    pop hl
+    inc hl
+    inc b
+    ld a,(v_wcols)
+    cp b
+    jr nz,edit_draw_ch
+    ld a,(v_ui1)
+    inc a
+    ld (v_ui1),a
+    cp 4
+    jr c,edit_draw_line
+    jr edit_draw_cur
+edit_draw_pend:
+    ld a,(v_t9len)
+    or a
+    jr z,edit_draw_cur
+    ld a,$F0                    ; pending T9 digits, inverted
+    ld (v_invert),a
+    ld a,(v_font)
+    or a
+    jr z,edit_draw_pi
+    ld a,$FF
+    ld (v_invert),a
+edit_draw_pi:
+    ld hl,T9SEQ
+    ld a,(v_t9len)
+    ld e,a
+edit_draw_p:
+    ld a,(hl)
+    push hl
+    push bc
+    push de
+    call putchar
+    pop de
+    pop bc
+    pop hl
+    inc hl
+    inc b
+    dec e
+    jr nz,edit_draw_p
+    xor a
+    ld (v_invert),a
+edit_draw_cur:
+    ld a,'_'
+    call putchar
+    ; candidates (T9) or mode hint, always in the dense font
+    ld a,(v_font)
+    push af
+    xor a
+    ld (v_font),a
+    ld a,(v_edmode)
+    or a
+    jr nz,edit_draw_mode
+    ld a,(v_t9cnt)
+    or a
+    jr z,edit_draw_mode
+    ld c,57
+    ld b,0
+    ld d,0
+edit_draw_cand:
+    ld a,d
+    ld hl,v_t9sel
+    cp (hl)
+    ld a,0
+    jr nz,edit_draw_cn
+    ld a,$F0
+edit_draw_cn:
+    ld (v_invert),a
+    ld a,d
+    add a,a
+    ld e,a
+    push de
+    ld d,0
+    ld hl,T9CAND0
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ex de,hl
+    pop de
+    ld a,' '
+    push hl
+    push de
+    call putchar
+    pop de
+    pop hl
+    inc b
+edit_draw_cw:
+    ld a,(hl)
+    cp 10
+    jr z,edit_draw_ce
+    or a
+    jr z,edit_draw_ce
+    ld a,b
+    cp 20
+    jr nc,edit_draw_ce
+    ld a,(hl)
+    push hl
+    push de
+    call putchar
+    pop de
+    pop hl
+    inc hl
+    inc b
+    jr edit_draw_cw
+edit_draw_ce:
+    xor a
+    ld (v_invert),a
+    inc d
+    ld a,(v_t9cnt)
+    cp d
+    jr nz,edit_draw_cand
+edit_draw_mode:
+    ld a,(v_edmode)
+    add a,a
+    add a,a
+    ld e,a
+    ld d,0
+    ld hl,mode_names
+    add hl,de
+    ld b,20
+    ld c,57
+    ld a,$F0
+    ld (v_invert),a
+    call puts
+    xor a
+    ld (v_invert),a
+    ld a,(v_edflags)
+    bit 0,a
+    jr z,edit_draw_x
+    ld a,(v_model)
+    ld hl,mod_v3
+    or a
+    jr z,edit_draw_mm
+    ld hl,mod_r1
+edit_draw_mm:
+    ld b,0
+    ld c,50
+    call puts
+edit_draw_x:
+    pop af
+    ld (v_font),a
+    jp lcd_blit
+
+v_edtitle   .equ VARS+$6E       ; 16-bit
+mode_names: .db "T9 ",0,"ABC",0,"123",0
+mod_v3: .db "MODEL: V3 (MODE=SWAP)",0
+mod_r1: .db "MODEL: R1 (MODE=SWAP)",0
+fn_dict: .db "DICT",0
+
+abc_table:
+    .db K_MATH,'a',K_APPS,'b',K_PRGM,'c',K_VARS,'d',K_INV,'e',K_SIN,'f',K_COS,'g',K_TAN,'h',K_POW,'i'
+    .db K_SQ,'j',K_COMMA,'k',K_LPAR,'l',K_RPAR,'m',K_DIV,'n',K_LOG,'o',K_7,'p',K_8,'q',K_9,'r'
+    .db K_MUL,'s',K_LN,'t',K_4,'u',K_5,'v',K_6,'w',K_MINUS,'x',K_STO,'y',K_1,'z',K_0,' ',K_DOT,'.'
+    .db 0,0
+num_table:
+    .db K_0,'0',K_1,'1',K_2,'2',K_3,'3',K_4,'4',K_5,'5',K_6,'6',K_7,'7',K_8,'8',K_9,'9'
+    .db K_DOT,'.',K_NEG,'-',K_MINUS,'-',K_PLUS,'+',K_MUL,'*',K_DIV,'/',K_COMMA,',',K_LPAR,'(',K_RPAR,')'
+    .db K_STO,'_',K_POW,'^',K_LN,':',K_LOG,'@',K_SQ,'#',K_INV,'!',K_SIN,'=',K_COS,'?',K_TAN,'&'
+    .db 0,0

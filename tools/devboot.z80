@@ -1,0 +1,11 @@
+; DEV ROM ONLY: stand-in for the factory boot code (flash page $7F).  The real calculator keeps TI's
+; boot page, which validates the signed OS and enters it at $0053 of page 0 (the OS-header convention
+; documented by KnightOS / WikiTI; page 0 also starts cleanly at $0000).  This stub takes the $0053
+; path so that every emulator test boots through it.  The .8xu never contains page $7F.
+.org $8000
+    di
+    ld a,$06
+    out ($04),a                 ; memory map mode 0
+    ld a,$7F
+    out ($07),a
+    jp $0053

@@ -1,0 +1,430 @@
+; =============================================================================
+; PONG (native).  You (left) against the calculator (right), first to 7.  UP / DOWN move the paddle, MODE / CLEAR pause.
+; The ball speeds up every few hits and leaves the paddle at an angle that depends on where it was hit.  The CPU paddle follows
+; the ball with a small random aiming error that changes at every hit: it can be beaten, and it does reach the ball.
+; =============================================================================
+pg_py       .equ GV+0           ; player paddle top (8..52)
+pg_cy       .equ GV+1           ; cpu paddle top
+pg_bx       .equ GV+2           ; ball top-left (3x3)
+pg_by       .equ GV+3
+pg_vx       .equ GV+4           ; signed
+pg_vy       .equ GV+5
+pg_ps       .equ GV+6           ; scores
+pg_cs       .equ GV+7
+pg_hits     .equ GV+8
+pg_wait     .equ GV+9           ; frames left before the serve
+pg_err      .equ GV+10          ; cpu aiming error (signed)
+pg_spd      .equ GV+11          ; cpu paddle speed
+pg_step     .equ GV+12
+pg_dir      .equ GV+13          ; 1: the next serve goes to the right (towards the cpu)
+pg_cyc      .equ GV+14
+PG_TOP      .equ 8
+PG_PH       .equ 12
+
+game_pong:
+    ld a,2
+    ld b,4
+    call gl_init
+pg_restart:
+    xor a
+    ld (pg_ps),a
+    ld (pg_cs),a
+    ld a,2
+    ld (pg_spd),a
+    ld a,1
+    ld (pg_dir),a
+    call pg_serve
+pg_loop:
+    call gl_tick
+    ld a,(gl_press)
+    and GK_Q|GK_P
+    jr z,pg_nop
+    call gl_pause
+    jr c,pg_quit
+pg_nop:
+    call pg_move
+    ld hl,pg_py                 ; (the serve wait counter is not part of the picture)
+    ld b,9
+    call gl_changed
+    jr z,pg_chk
+    call pg_draw
+    call gl_flush
+pg_chk:
+    ld a,(pg_ps)
+    cp 7
+    jr z,pg_won
+    ld a,(pg_cs)
+    cp 7
+    jr z,pg_lost
+    jr pg_loop
+pg_quit:
+    jp gl_exit
+pg_won:
+    ld hl,pg_t_win
+    jr pg_end
+pg_lost:
+    ld hl,pg_t_lose
+pg_end:
+    call gl_result
+    jr c,pg_quit
+    jp pg_restart
+
+pg_serve:                       ; ball in the middle, a short pause, then it goes towards the player who lost the point
+    ld a,45
+    ld (pg_bx),a
+    ld a,34
+    ld (pg_by),a
+    ld a,3
+    ld (pg_vx),a
+    ld a,(pg_dir)
+    or a
+    jr nz,pgs_r
+    ld a,$FD
+    ld (pg_vx),a
+pgs_r:
+    ld a,3
+    call gl_rnd_n               ; 0..2 -> vy = -1, 2 or 1
+    sub 1
+    jr nz,pgs_vy
+    ld a,2
+pgs_vy:
+    ld (pg_vy),a
+    ld a,28
+    ld (pg_py),a
+    ld (pg_cy),a
+    ld a,30
+    ld (pg_wait),a
+    xor a
+    ld (pg_hits),a
+    ld a,(pg_ps)                ; the cpu gets sharper when you lead by two or more
+    ld hl,pg_cs
+    sub (hl)
+    ld b,2
+    cp 2
+    jr c,pgs_sp
+    ld b,3
+pgs_sp:
+    ld a,b
+    ld (pg_spd),a
+pg_newerr:                      ; aiming error -4..+4
+    ld a,9
+    call gl_rnd_n
+    sub 4
+    ld (pg_err),a
+    ret
+
+; ---- one frame ------------------------------------------------------------------------------------------------------------
+pg_move:
+    ld a,(gl_held)              ; player paddle: 3 px per frame
+    ld b,a
+    ld a,(pg_py)
+    bit 2,b
+    jr z,pgm_d
+    sub 3
+    cp PG_TOP
+    jr nc,pgm_d
+    ld a,PG_TOP
+pgm_d:
+    bit 3,b
+    jr z,pgm_s
+    add a,3
+    cp 64-PG_PH+1
+    jr c,pgm_s
+    ld a,64-PG_PH
+pgm_s:
+    ld (pg_py),a
+    ld a,(pg_wait)              ; serving: the ball waits
+    or a
+    jr z,pgm_ai
+    dec a
+    ld (pg_wait),a
+    ret
+pgm_ai:
+    ld a,(pg_vx)                ; cpu: only when the ball comes towards it
+    bit 7,a
+    jr nz,pgm_ball
+    ld a,(pg_by)
+    ld hl,pg_err
+    add a,(hl)
+    sub 5                       ; aim at the paddle centre
+    ld b,a
+    bit 7,b
+    jr z,pgai_t
+    ld b,PG_TOP
+pgai_t:
+    ld a,(pg_cy)
+    cp b
+    jr z,pgm_ball
+    jr c,pgm_down
+    ld hl,pg_spd                ; the paddle is below the target: go up
+    ld c,(hl)
+    sub c
+    jr c,pgm_clampt
+    cp PG_TOP
+    jr nc,pgm_set
+pgm_clampt:
+    ld a,PG_TOP
+    jr pgm_set
+pgm_down:
+    ld hl,pg_spd
+    add a,(hl)
+    cp 64-PG_PH+1
+    jr c,pgm_set
+    ld a,64-PG_PH
+pgm_set:
+    ld (pg_cy),a
+pgm_ball:                       ; the ball moves one pixel at a time on each axis so it cannot skip the paddle
+    ld a,(pg_vx)
+    call pg_absstep             ; -> A = |v|, pg_step = +1 / -1
+    or a
+    jr z,pgm_y
+pgx_l:
+    push af
+    ld a,(pg_bx)
+    ld hl,pg_step
+    add a,(hl)
+    ld (pg_bx),a
+    call pg_hitx
+    pop af
+    dec a
+    jr nz,pgx_l
+pgm_y:
+    ld a,(pg_vy)
+    call pg_absstep
+    or a
+    ret z
+pgy_l:
+    push af
+    ld a,(pg_by)
+    ld hl,pg_step
+    add a,(hl)
+    ld (pg_by),a
+    cp PG_TOP
+    jr nc,pgy_b
+    ld a,PG_TOP
+    ld (pg_by),a
+    call pg_flipy
+pgy_b:
+    ld a,(pg_by)
+    cp 61
+    jr c,pgy_n
+    ld a,61
+    ld (pg_by),a
+    ld a,(pg_vy)
+    bit 7,a
+    call z,pg_flipy             ; only when travelling down
+pgy_n:
+    pop af
+    dec a
+    jr nz,pgy_l
+    ret
+
+pg_absstep:                     ; A = signed velocity -> A = |v|, pg_step = +1 / -1
+    bit 7,a
+    jr z,pga_p
+    neg
+    ld b,a
+    ld a,$FF
+    ld (pg_step),a
+    ld a,b
+    ret
+pga_p:
+    ld b,a
+    ld a,1
+    ld (pg_step),a
+    ld a,b
+    ret
+
+pg_flipy:
+    ld a,(pg_vy)
+    neg
+    ld (pg_vy),a
+    ret
+
+pg_hitx:                        ; after one horizontal step: the two edges, then the paddle ahead of the ball
+    ld a,(pg_bx)
+    cp 250                      ; wrapped below 0: the ball left through the player's side
+    jr nc,pgh_cpu_pt
+    cp 94
+    jp nc,pgh_pl_pt
+    ld a,(pg_vx)
+    bit 7,a
+    jr z,pgh_cpu
+    ld a,(pg_bx)                ; player paddle occupies x 3..5
+    cp 6
+    ret nc
+    cp 2
+    ret c
+    ld a,(pg_py)
+    ld b,a
+    ld a,(pg_by)
+    add a,2
+    cp b
+    ret c                       ; ball above the paddle
+    ld a,(pg_by)
+    ld c,a
+    ld a,b
+    add a,PG_PH-1
+    cp c
+    ret c                       ; ball below the paddle
+    ld a,6
+    ld (pg_bx),a
+    ld a,(pg_by)
+    inc a
+    ld hl,pg_py
+    sub (hl)
+    call pg_bounce
+    ld a,(pg_vx)
+    neg
+    ld (pg_vx),a
+    jp pg_newerr
+pgh_cpu:
+    ld a,(pg_bx)                ; cpu paddle occupies x 90..92
+    cp 88
+    ret c
+    cp 93
+    ret nc
+    ld a,(pg_cy)
+    ld b,a
+    ld a,(pg_by)
+    add a,2
+    cp b
+    ret c
+    ld a,(pg_by)
+    ld c,a
+    ld a,b
+    add a,PG_PH-1
+    cp c
+    ret c
+    ld a,87
+    ld (pg_bx),a
+    ld a,(pg_by)
+    inc a
+    ld hl,pg_cy
+    sub (hl)
+    call pg_bounce
+    ld a,(pg_vx)
+    neg
+    ld (pg_vx),a
+    ret
+pgh_cpu_pt:                     ; the ball left through the player's side: the cpu scores, the next serve goes to the player
+    ld a,(pg_cs)
+    inc a
+    ld (pg_cs),a
+    xor a
+    ld (pg_dir),a
+    jp pg_serve
+pgh_pl_pt:
+    ld a,(pg_ps)
+    inc a
+    ld (pg_ps),a
+    ld a,1
+    ld (pg_dir),a
+    jp pg_serve
+
+pg_bounce:                      ; A = hit position on the paddle (0..13, may be < 0): sets vy, speeds the rally up
+    jr nc,pgb_a
+    xor a
+pgb_a:
+    cp 14
+    jr c,pgb_ok
+    ld a,13
+pgb_ok:
+    ld e,a
+    ld d,0
+    ld hl,pg_vytab
+    add hl,de
+    ld a,(hl)
+    ld (pg_vy),a
+    ld a,(pg_hits)
+    inc a
+    ld (pg_hits),a
+    cp 4                        ; faster every 4 hits up to 5 px / frame
+    ret c
+    xor a
+    ld (pg_hits),a
+    ld a,(pg_vx)
+    bit 7,a
+    jr nz,pgb_neg
+    cp 5
+    ret nc
+    inc a
+    ld (pg_vx),a
+    ret
+pgb_neg:
+    cp $FC
+    ret c
+    dec a
+    ld (pg_vx),a
+    ret
+pg_vytab: .db $FD,$FD,$FE,$FE,$FF,$FF,0,0,1,1,2,2,3,3
+
+; ---- drawing -------------------------------------------------------------------------------------------------------------
+pg_draw:
+    call S_GFX_CLEAR
+    ld b,0                      ; top line
+    ld c,7
+    ld d,96
+    ld e,1
+    ld a,1
+    call gl_rect
+    ld hl,pg_l_you
+    call gl_lang
+    ld b,2
+    ld c,1
+    call gl_text
+    ld a,(pg_ps)
+    ld l,a
+    ld h,0
+    ld b,6
+    ld c,1
+    call gl_num
+    ld hl,pg_l_cpu
+    ld b,14
+    ld c,1
+    call gl_text
+    ld a,(pg_cs)
+    ld l,a
+    ld h,0
+    ld b,18
+    ld c,1
+    call gl_num
+    ld c,9                      ; net: dashes down the middle
+pgd_net:
+    ld b,47
+    ld d,1
+    ld e,2
+    ld a,1
+    call gl_rect
+    ld a,c
+    add a,5
+    ld c,a
+    cp 62
+    jr c,pgd_net
+    ld a,(pg_py)                ; paddles
+    ld c,a
+    ld b,3
+    ld d,3
+    ld e,PG_PH
+    ld a,1
+    call gl_rect
+    ld a,(pg_cy)
+    ld c,a
+    ld b,90
+    ld d,3
+    ld e,PG_PH
+    ld a,1
+    call gl_rect
+    ld a,(pg_bx)                ; ball
+    ld b,a
+    ld a,(pg_by)
+    ld c,a
+    ld d,3
+    ld e,3
+    ld a,1
+    jp gl_rect
+
+pg_l_you: .db "TU",0,"YOU",0
+pg_l_cpu: .db "CPU",0
+pg_t_win: .db "GANASTE!",0,"YOU WIN!",0
+pg_t_lose: .db "PERDISTE",0,"YOU LOSE",0

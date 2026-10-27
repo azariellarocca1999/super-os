@@ -1,0 +1,1329 @@
+; =============================================================================
+; Diagnostics / hardware bring-up.  First thing to run when the real ESP32 is connected.
+;   1 LINK   live line levels, error counters, wake+status test, 10x ping, throughput benchmark
+;   2 LCD    patterns, contrast ramp, 4-level gray
+;   3 KEYS   raw keyboard matrix + ON line
+;   4 RAM    write/verify all 8 RAM pages (128 KB)
+;   5 FLASH  guard refusal test + erase/program/verify in a scratch sector (pages $74-$77)
+;   6 ESP    report from the ESP32 itself (firmware, uptime, wake cause, heap, line levels, counters)
+; =============================================================================
+DG_LINE     .equ 6              ; pixel rows per text line (4x6 font)
+
+app_diag:
+    ld a,(v_font)
+    ld (v_dgfont),a
+    call app_diag_menu
+    ld a,(v_dgfont)
+    ld (v_font),a
+    ret
+
+app_diag_menu:
+    xor a
+    ld (v_font),a
+    ld hl,STR_DG_TITLE
+    call ui_begin_id
+    ld hl,STR_DG_1
+    call tr
+    ld b,0
+    ld c,14
+    call S_PUTS
+    ld hl,STR_DG_2
+    call tr
+    ld b,0
+    ld c,20
+    call S_PUTS
+    ld hl,STR_DG_3
+    call tr
+    ld b,0
+    ld c,26
+    call S_PUTS
+    ld hl,STR_DG_4
+    call tr
+    ld b,0
+    ld c,32
+    call S_PUTS
+    ld hl,STR_DG_5
+    call tr
+    ld b,0
+    ld c,38
+    call S_PUTS
+    ld hl,STR_DG_6
+    call tr
+    ld b,0
+    ld c,44
+    call S_PUTS
+    ld hl,STR_DG_7
+    call tr
+    ld b,0
+    ld c,50
+    call S_PUTS
+    call ui_wait_any
+    cp K_7
+    jp z,dg_timing
+    cp K_1
+    jp z,dg_link
+    cp K_2
+    jp z,dg_lcd
+    cp K_3
+    jp z,dg_keys
+    cp K_4
+    jp z,dg_ram
+    cp K_5
+    jp z,dg_flash
+    cp K_6
+    jp z,dg_esp
+    ret
+
+; ---- 7 TIMING: real tick rate (against the crystal RTC) and real CPU speed ----------------------------------------------------
+; Scratch in INBUF: +0 tick at the first RTC edge, +2 ticks per RTC second, +4 max loops in one tick, +6 RTC ok, +8 text
+dg_timing:
+    ld hl,STR_DG_T7
+    call dg_begin
+    ld hl,STR_DG_WAIT
+    call tr
+    ld b,0
+    ld c,20
+    call S_PUTS
+    call S_LCD_BLIT
+    call dg_rtc_edge
+    jr c,dgt_nortc
+    ld hl,(v_tick)
+    ld (INBUF),hl
+    call dg_rtc_edge
+    jr c,dgt_nortc
+    ld hl,(v_tick)
+    ld de,(INBUF)
+    or a
+    sbc hl,de
+    ld (INBUF+2),hl
+    ld a,1
+    ld (INBUF+6),a
+    jr dgt_cpu
+dgt_nortc:
+    xor a
+    ld (INBUF+6),a
+    ld hl,0
+    ld (INBUF+2),hl
+dgt_cpu:
+    ld hl,0
+    ld (INBUF+4),hl
+    ld b,12                     ; 12 one-tick windows, keep the biggest (the others lost time to the scheduler)
+dgt_win:
+    push bc
+    call dg_count_tick
+    ld de,(INBUF+4)
+    or a
+    sbc hl,de
+    add hl,de                   ; HL back
+    jr c,dgt_small
+    ld (INBUF+4),hl
+dgt_small:
+    pop bc
+    djnz dgt_win
+    ; MHz*10 = loops * 35 * ticks_per_second / 100000 = (loops * tps) / 2857
+    ld de,(INBUF+4)
+    ld a,(INBUF+2)
+    ld b,a                      ; tps (low byte; 108 expected)
+    or a
+    jr nz,dgt_mul
+    ld b,108                    ; no RTC edge: assume the nominal rate
+dgt_mul:
+    ld hl,0
+    ld c,0
+dgt_madd:
+    add hl,de
+    jr nc,dgt_mnc
+    inc c
+dgt_mnc:
+    djnz dgt_madd
+    ld b,0                      ; B = quotient (MHz*10)
+dgt_div:
+    ld de,2857
+    or a
+    sbc hl,de
+    ld a,c
+    sbc a,0
+    ld c,a
+    jr c,dgt_ddone
+    inc b
+    jr dgt_div
+dgt_ddone:
+    ld a,b
+    ld (INBUF+7),a
+    ; ---- show ----
+    ld hl,STR_DG_T7
+    call dg_begin
+    ld hl,dgt_l1
+    ld a,0
+    ld b,0
+    call dg_text
+    ld hl,(INBUF+2)
+    ld a,0
+    ld b,10
+    call dg_num
+    ld hl,dgt_l2
+    ld a,1
+    ld b,0
+    call dg_text
+    ld a,(INBUF+7)
+    ld de,INBUF+8
+    ld c,0
+dgt_t10:
+    cp 10
+    jr c,dgt_tdone
+    sub 10
+    inc c
+    jr dgt_t10
+dgt_tdone:                      ; C = whole MHz, A = tenths
+    ld b,a
+    ld a,c
+    cp 10
+    jr c,dgt_one
+    ld a,'1'
+    ld (de),a
+    inc de
+    ld a,c
+    sub 10
+    ld c,a
+dgt_one:
+    ld a,c
+    add a,'0'
+    ld (de),a
+    inc de
+    ld a,'.'
+    ld (de),a
+    inc de
+    ld a,b
+    add a,'0'
+    ld (de),a
+    inc de
+    xor a
+    ld (de),a
+    ld hl,INBUF+8
+    ld a,1
+    ld b,10
+    call dg_text
+    ld hl,dgt_l3
+    ld a,2
+    ld b,0
+    call dg_text
+    ld hl,dgt_no
+    ld a,(INBUF+6)
+    or a
+    jr z,dgt_rtcs
+    ld hl,dgt_ok
+dgt_rtcs:
+    ld a,2
+    ld b,10
+    call dg_text
+    ld hl,STR_DG_T7H
+    call tr
+    ld b,0
+    ld c,50
+    call S_PUTS
+    call S_LCD_BLIT
+dgt_key:
+    call S_WAIT_KEY
+    cp K_CLEAR
+    ret z
+    cp K_ENTER
+    jp z,dg_timing
+    jr dgt_key
+dgt_l1: .db "TICKS/S",0
+dgt_l2: .db "CPU MHZ",0
+dgt_l3: .db "RTC",0
+dgt_ok: .db "OK",0
+dgt_no: .db "NO",0
+
+dg_rtc_edge:                    ; wait for the RTC second to change; CF = no edge within ~3 s (crystal timer not running)
+    ld a,(v_clks)
+    ld b,a
+    ld de,330
+dre_l:
+    push bc
+    call S_FRAME_WAIT
+    pop bc
+    ld a,(v_clks)
+    cp b
+    jr nz,dre_ok
+    dec de
+    ld a,d
+    or e
+    jr nz,dre_l
+    scf
+    ret
+dre_ok:
+    or a
+    ret
+
+dg_count_tick:                  ; HL = iterations of a 35-T spin loop within exactly one tick period
+    ld a,(v_tick)
+    ld c,a
+dct_e:
+    ld a,(v_tick)
+    cp c
+    jr z,dct_e
+    ld c,a
+    ld hl,0
+dct_l:
+    inc hl
+    ld a,(v_tick)
+    cp c
+    jr z,dct_l
+    ret
+
+; ---- helpers ---------------------------------------------------------------------------------------------
+dg_begin:                       ; HL = STR id: title bar, dense font, returns with the old font pushed? (caller restores)
+    xor a
+    ld (v_font),a
+    jp ui_begin_id
+
+dg_y:                           ; A = line -> C = y
+    ld c,14
+    or a
+    ret z
+dg_y_l:
+    ld b,a
+    ld a,c
+    add a,DG_LINE
+    ld c,a
+    ld a,b
+    dec a
+    jr nz,dg_y_l
+    ret
+
+dg_text:                        ; HL = string, A = line, B = col
+    push hl
+    push bc
+    call dg_y
+    ld a,c
+    pop bc
+    ld c,a
+    pop hl
+    jp S_PUTS
+
+dg_num:                         ; HL = value, A = line, B = col
+    push hl
+    push bc
+    call dg_y
+    ld a,c
+    pop bc
+    ld c,a
+    pop hl
+    jp S_PRINT_U16
+
+dg_hex8:                        ; A = byte -> two ASCII hex digits at (DE), DE advanced
+    push af
+    rrca
+    rrca
+    rrca
+    rrca
+    call dg_hex4
+    pop af
+dg_hex4:
+    and $0F
+    add a,'0'
+    cp '9'+1
+    jr c,dg_hex4_s
+    add a,7
+dg_hex4_s:
+    ld (de),a
+    inc de
+    ret
+
+dg_ms:                          ; HL = ticks -> HL = milliseconds (ticks * 9.25)
+    ld d,h
+    ld e,l
+    add hl,hl
+    add hl,hl
+    add hl,hl                   ; *8
+    add hl,de                   ; *9
+    srl d
+    rr e
+    srl d
+    rr e                        ; /4
+    add hl,de                   ; *9.25
+    ret
+
+dg_div16:                       ; HL / DE -> HL = quotient, DE = remainder (DE != 0)
+    ld b,h
+    ld c,l
+    ld hl,0
+    ld a,16
+dg_div16_l:
+    sla c
+    rl b
+    adc hl,hl
+    or a
+    sbc hl,de
+    jr nc,dg_div16_ok
+    add hl,de
+    jr dg_div16_n
+dg_div16_ok:
+    inc c
+dg_div16_n:
+    dec a
+    jr nz,dg_div16_l
+    ld d,h
+    ld e,l
+    ld h,b
+    ld l,c
+    ret
+
+; ---- 1: link ---------------------------------------------------------------------------------------------
+dg_link:
+dg_link_loop:
+    ld hl,STR_DG_1
+    call dg_begin
+    in a,(P_LINK)
+    ld e,a
+    ld hl,dg_s_tip
+    ld a,e
+    and 1
+    add a,'0'
+    ld (dg_s_tip+4),a
+    ld a,e
+    rrca
+    and 1
+    add a,'0'
+    ld (dg_s_tip+12),a
+    ld hl,dg_s_tip
+    ld b,0
+    ld a,0
+    call dg_text
+    ld a,(v_esp)
+    add a,a
+    ld e,a
+    ld d,0
+    ld hl,esp_names
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ex de,hl
+    ld b,5
+    ld a,1
+    call dg_text
+    ld hl,dg_s_esp
+    ld b,0
+    ld a,1
+    call dg_text
+    ld hl,dg_s_cnt
+    ld b,0
+    ld a,2
+    call dg_text
+    ld hl,(v_cnt_retry)
+    ld b,4
+    ld a,2
+    call dg_num
+    ld hl,(v_cnt_crc)
+    ld b,12
+    ld a,2
+    call dg_num
+    ld hl,(v_cnt_tmo)
+    ld b,20
+    ld a,2
+    call dg_num
+    ld hl,dg_s_frames
+    ld b,0
+    ld a,3
+    call dg_text
+    ld hl,(v_cnt_frames)
+    ld b,7
+    ld a,3
+    call dg_num
+    ld hl,dg_s_help
+    ld b,0
+    ld a,7
+    call dg_text
+    call S_LCD_BLIT
+    ld b,36
+dg_link_poll:
+    push bc
+    call S_KEY_POLL
+    pop bc
+    or a
+    jr nz,dg_link_key
+    push bc
+    ld bc,3
+    call S_TASK_SLEEP
+    pop bc
+    djnz dg_link_poll
+    jp dg_link_loop
+dg_link_key:
+    cp K_CLEAR
+    ret z
+    cp K_ON
+    ret z
+    cp K_ENTER
+    jp nz,dg_link_loop
+    ; ---- test sequence ----------------------------------------------------------------------------------
+    ld hl,dg_s_run
+    ld b,0
+    ld a,4
+    call dg_text
+    call S_LCD_BLIT
+    ld hl,(v_tick)               ; 1) wake + status
+    ld (v_dgt0),hl
+    ld a,CMD_STATUS
+    ld hl,INBUF
+    ld b,0
+    call S_LINK_REQUEST
+    ld a,0
+    jr c,dg_t1_bad
+    inc a
+dg_t1_bad:
+    ld (v_dgok),a
+    ld hl,(v_tick)
+    ld de,(v_dgt0)
+    or a
+    sbc hl,de
+    call dg_ms
+    push hl
+    ld hl,dg_s_t1
+    ld b,0
+    ld a,4
+    call dg_text
+    pop hl
+    ld a,(v_dgok)
+    or a
+    jr z,dg_t1_fail
+    ld b,12
+    ld a,4
+    call dg_num
+    ld hl,dg_s_ms
+    ld b,17
+    ld a,4
+    call dg_text
+    jr dg_t2
+dg_t1_fail:
+    ld hl,dg_s_fail
+    ld b,12
+    ld a,4
+    call dg_text
+dg_t2:
+    call S_LCD_BLIT
+    ld hl,INBUF                  ; 2) ping x10 with 64 payload bytes
+    ld b,64
+    ld a,'A'
+dg_fill:
+    ld (hl),a
+    inc hl
+    inc a
+    djnz dg_fill
+    xor a
+    ld (v_dgok),a
+    ld hl,0
+    ld (v_dgsum),hl
+    ld c,10
+dg_ping:
+    push bc
+    ld hl,(v_tick)
+    ld (v_dgt0),hl
+    ld a,CMD_PING
+    ld hl,INBUF
+    ld b,64
+    call S_LINK_REQUEST
+    jr c,dg_ping_bad
+    ld a,(v_dgok)
+    inc a
+    ld (v_dgok),a
+    ld hl,(v_tick)
+    ld de,(v_dgt0)
+    or a
+    sbc hl,de
+    ld de,(v_dgsum)
+    add hl,de
+    ld (v_dgsum),hl
+dg_ping_bad:
+    pop bc
+    dec c
+    jr nz,dg_ping
+    ld hl,dg_s_t2
+    ld b,0
+    ld a,5
+    call dg_text
+    ld a,(v_dgok)
+    ld l,a
+    ld h,0
+    ld b,9
+    ld a,5
+    call dg_num
+    ld hl,dg_s_of
+    ld b,11
+    ld a,5
+    call dg_text
+    ld a,(v_dgok)
+    or a
+    jr z,dg_t3
+    ld hl,(v_dgsum)
+    call dg_ms
+    ld a,(v_dgok)
+    ld e,a
+    ld d,0
+    call dg_div16               ; HL = average ms per ping
+    ld b,15
+    ld a,5
+    call dg_num
+    ld hl,dg_s_ms
+    ld b,19
+    ld a,5
+    call dg_text
+dg_t3:
+    call S_LCD_BLIT
+    ld hl,(v_tick)               ; 3) throughput: the ESP32 returns 512 pseudo-random bytes
+    ld (v_dgt0),hl
+    ld hl,INBUF
+    ld (hl),0
+    inc hl
+    ld (hl),2                    ; 512 = $0200
+    ld a,CMD_BENCH
+    ld hl,INBUF
+    ld b,2
+    call S_LINK_REQUEST
+    jr c,dg_t3_fail
+    ld hl,(v_tick)
+    ld de,(v_dgt0)
+    or a
+    sbc hl,de
+    call dg_ms                   ; HL = ms
+    push hl
+    ld hl,dg_s_t3
+    ld b,0
+    ld a,6
+    call dg_text
+    pop de                       ; DE = ms
+    ld a,d
+    or e
+    jr z,dg_t3_done
+    ld hl,40960                  ; 512 B = 4096 bits: bits/ms x10 = kbit/s x10
+    call dg_div16                ; HL = kbit/s * 10
+    ld de,10
+    call dg_div16                ; HL = whole kbit/s
+    ld b,11
+    ld a,6
+    call dg_num
+    ld hl,dg_s_kbit
+    ld b,15
+    ld a,6
+    call dg_text
+dg_t3_done:
+    call S_LCD_BLIT
+    call dg_turbo_test
+    call S_LCD_BLIT
+    call S_WAIT_KEY
+    jp dg_link_loop
+dg_t3_fail:
+    ld hl,dg_s_t3
+    ld b,0
+    ld a,6
+    call dg_text
+    ld hl,dg_s_fail
+    ld b,11
+    ld a,6
+    call dg_text
+    jr dg_t3_done
+
+; 4) the same 512 bytes over the turbo byte layer (calculator-clocked)
+dg_turbo_test:
+    ld hl,INBUF
+    ld (hl),1
+    ld a,CMD_TURBO
+    ld hl,INBUF
+    ld b,1
+    call S_LINK_REQUEST
+    jr c,dgt_fail
+    ld hl,(v_tick)
+    ld (v_dgt0),hl
+    ld hl,INBUF
+    ld (hl),0
+    inc hl
+    ld (hl),2
+    ld a,CMD_BENCH
+    ld hl,INBUF
+    ld b,2
+    call S_LINK_REQUEST
+    push af
+    ld hl,(v_tick)
+    ld de,(v_dgt0)
+    or a
+    sbc hl,de
+    call dg_ms
+    push hl
+    ld hl,INBUF
+    ld (hl),0
+    ld a,CMD_TURBO
+    ld hl,INBUF
+    ld b,1
+    call S_LINK_REQUEST
+    ld a,7                       ; line 7 holds the help text: clear it for the result
+    call dg_y
+    ld b,0
+    ld d,12
+    ld e,6
+    xor a
+    call S_GFX_FILL
+    ld hl,dg_s_t4
+    ld b,0
+    ld a,7
+    call dg_text
+    pop de
+    pop af
+    jr c,dgt_fail2
+    ld a,d
+    or e
+    ret z
+    ld hl,40960
+    call dg_div16
+    ld de,10
+    call dg_div16
+    ld b,11
+    ld a,7
+    call dg_num
+    ld hl,dg_s_kbit
+    ld b,15
+    ld a,7
+    jp dg_text
+dgt_fail:
+    ld a,7
+    call dg_y
+    ld b,0
+    ld d,12
+    ld e,6
+    xor a
+    call S_GFX_FILL
+    ld hl,dg_s_t4
+    ld b,0
+    ld a,7
+    call dg_text
+dgt_fail2:
+    ld hl,dg_s_fail
+    ld b,11
+    ld a,7
+    jp dg_text
+dg_s_t4:    .db "TURBO 512B",0
+dg_s_tip:   .db "TIP:1  RING:1 (1=HIGH)",0
+dg_s_esp:   .db "ESP:",0
+dg_s_cnt:   .db "RTY:    CRC:    TMO:",0
+dg_s_frames: .db "FRAMES:",0
+dg_s_help:  .db "ENTER=TEST CLEAR=BACK",0
+dg_s_run:   .db "RUNNING...",0
+dg_s_t1:    .db "WAKE+STATUS",0
+dg_s_t2:    .db "PING 64B",0
+dg_s_t3:    .db "BENCH 512B",0
+dg_s_ms:    .db "MS",0
+dg_s_of:    .db "/10",0
+dg_s_kbit:  .db "KBIT/S",0
+dg_s_fail:  .db "FAIL",0
+dg_s_ok:    .db "PASS",0
+
+; ---- 2: LCD ------------------------------------------------------------------------------------------------
+dg_lcd:
+    xor a
+    ld (v_ui3),a                 ; pattern
+    ld a,(v_contrast)
+    ld (v_ui2),a                 ; live contrast value
+dg_lcd_draw:
+    call S_GFX_CLEAR
+    ld a,(v_ui3)
+    or a
+    jr nz,dg_lcd_p1
+    ld a,$FF                     ; 0: all black
+    ld b,0
+    ld c,0
+    ld d,12
+    ld e,64
+    call S_GFX_FILL
+    jr dg_lcd_show
+dg_lcd_p1:
+    cp 1
+    jr nz,dg_lcd_p2              ; 1: all white (nothing to draw)
+    jr dg_lcd_show
+dg_lcd_p2:
+    cp 2
+    jr nz,dg_lcd_p3
+    ld c,0                       ; 2: checkerboard
+dg_lcd_chk:
+    ld a,c
+    and 1
+    ld a,$55
+    jr z,dg_lcd_chk2
+    ld a,$AA
+dg_lcd_chk2:
+    ld b,0
+    ld d,12
+    ld e,1
+    push bc
+    call S_GFX_FILL
+    pop bc
+    inc c
+    ld a,c
+    cp 64
+    jr c,dg_lcd_chk
+    jr dg_lcd_show
+dg_lcd_p3:
+    cp 3
+    jr nz,dg_lcd_p4
+    ld c,0                       ; 3: horizontal stripes
+dg_lcd_hs:
+    ld a,c
+    and 2
+    jr z,dg_lcd_hs2
+    ld a,$FF
+dg_lcd_hs2:
+    ld b,0
+    ld d,12
+    ld e,1
+    push bc
+    call S_GFX_FILL
+    pop bc
+    inc c
+    ld a,c
+    cp 64
+    jr c,dg_lcd_hs
+    jr dg_lcd_show
+dg_lcd_p4:
+    cp 4
+    jr nz,dg_lcd_p5
+    ld b,0                       ; 4: vertical stripes
+    ld c,0
+    ld d,12
+    ld e,64
+    ld a,$CC
+    call S_GFX_FILL
+    jr dg_lcd_show
+dg_lcd_p5:                       ; 5: gray bands (until a key is pressed)
+    cp 5
+    jr nz,dg_lcd_show
+    call dg_gray
+    xor a
+    ld (v_ui3),a
+    jr dg_lcd_draw
+dg_lcd_show:
+    call S_LCD_BLIT
+    call S_WAIT_KEY
+    cp K_CLEAR
+    jr z,dg_lcd_exit
+    cp K_ON
+    jr z,dg_lcd_exit
+    cp K_RIGHT
+    jr nz,dg_lcd_k1
+    ld a,(v_ui3)
+    inc a
+    cp 6
+    jr c,dg_lcd_set
+    xor a
+dg_lcd_set:
+    ld (v_ui3),a
+    jp dg_lcd_draw
+dg_lcd_k1:
+    cp K_LEFT
+    jr nz,dg_lcd_k2
+    ld a,(v_ui3)
+    or a
+    jr nz,dg_lcd_l1
+    ld a,6
+dg_lcd_l1:
+    dec a
+    jr dg_lcd_set
+dg_lcd_k2:
+    cp K_UP
+    jr nz,dg_lcd_k3
+    ld a,(v_ui2)                 ; contrast +1 (live, temporary)
+    cp 63
+    jp nc,dg_lcd_draw
+    inc a
+    jr dg_lcd_c
+dg_lcd_k3:
+    cp K_DOWN
+    jp nz,dg_lcd_draw
+    ld a,(v_ui2)
+    or a
+    jp z,dg_lcd_draw
+    dec a
+dg_lcd_c:
+    ld (v_ui2),a
+    or LCD_CONTR
+    call S_LCD_CMD
+    jp dg_lcd_draw
+dg_lcd_exit:
+    jp S_POWER_APPLY             ; restore the profile contrast
+
+dg_gray:                         ; vertical bands level 0..3 (rows) until a key
+    ld hl,GBUF1
+    ld de,GBUF2
+    ld c,64
+dg_gray_r:
+    ld a,c
+    rrca
+    rrca
+    rrca
+    and 3
+    ld b,a
+    ld a,0
+    bit 1,b
+    jr z,dg_gray_h
+    ld a,$FF
+dg_gray_h:
+    ld (v_ui0),a
+    ld a,0
+    bit 0,b
+    jr z,dg_gray_l
+    ld a,$FF
+dg_gray_l:
+    ld (v_ui1),a
+    ld b,12
+dg_gray_c:
+    ld a,(v_ui0)
+    ld (hl),a
+    ld a,(v_ui1)
+    ld (de),a
+    inc hl
+    inc de
+    djnz dg_gray_c
+    dec c
+    jr nz,dg_gray_r
+dg_gray_loop:
+    call S_GRAY_CYCLE
+    call S_KEY_POLL
+    or a
+    jr z,dg_gray_loop
+    ret
+
+; ---- 3: keys -----------------------------------------------------------------------------------------------
+dg_keys:
+    xor a
+    ld (v_ui3),a                 ; ticks CLEAR has been held
+dg_keys_loop:
+    ld hl,STR_DG_3
+    call dg_begin
+    ld c,0                       ; row
+    ld d,%11111110
+    ld hl,DGBUF
+dg_keys_row:
+    ld a,d
+    out (P_KEYS),a
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    in a,(P_KEYS)
+    cpl
+    ld (hl),a
+    inc hl
+    rlc d
+    inc c
+    ld a,c
+    cp 7
+    jr nz,dg_keys_row
+    ld a,$FF
+    out (P_KEYS),a
+    in a,(P_MEMMAP)
+    ld (hl),a                    ; raw $04 (bit 3 = 0 while ON is held)
+    ld b,0
+dg_keys_show:                    ; "R0:00 R1:00 ..." one row per line
+    ld a,b
+    ld e,a
+    ld d,0
+    ld hl,DGBUF
+    add hl,de
+    ld a,(hl)
+    ld de,NUMBUF
+    ld c,a
+    ld a,'R'
+    ld (de),a
+    inc de
+    ld a,b
+    add a,'0'
+    ld (de),a
+    inc de
+    ld a,':'
+    ld (de),a
+    inc de
+    ld a,c
+    call dg_hex8
+    xor a
+    ld (de),a
+    ld hl,NUMBUF
+    push bc
+    ld a,b
+    ld b,0
+    call dg_text
+    pop bc
+    inc b
+    ld a,b
+    cp 7
+    jr c,dg_keys_show
+    ld a,(DGBUF+7)             ; ON line
+    ld de,NUMBUF
+    ld c,a
+    ld a,'O'
+    ld (de),a
+    inc de
+    ld a,'N'
+    ld (de),a
+    inc de
+    ld a,':'
+    ld (de),a
+    inc de
+    ld a,c
+    bit 3,a
+    ld a,'0'
+    jr nz,dg_keys_on
+    ld a,'1'
+dg_keys_on:
+    ld (de),a
+    inc de
+    xor a
+    ld (de),a
+    ld hl,NUMBUF
+    ld b,0
+    ld a,7
+    call dg_text
+    ld hl,dg_s_keyhelp
+    ld b,0
+    ld a,8
+    call dg_text
+    call S_LCD_BLIT
+    ld bc,2
+    call S_TASK_SLEEP
+    ld a,(DGBUF+1)             ; row 1 bit 6 = CLEAR held?
+    bit 6,a
+    jr z,dg_keys_rel
+    ld a,(v_ui3)
+    inc a
+    ld (v_ui3),a
+    cp 60                        ; ~2 s of ~35 ms
+    ret nc
+    jp dg_keys_loop
+dg_keys_rel:
+    xor a
+    ld (v_ui3),a
+    jp dg_keys_loop
+dg_s_keyhelp: .db "HOLD CLEAR 2S TO EXIT",0
+
+; ---- 4: RAM ---------------------------------------------------------------------------------------------------
+dg_ram:
+    xor a
+    ld (v_dgram),a
+    ld hl,STR_DG_4
+    call dg_begin
+    ld hl,dg_s_ramwarn
+    ld b,0
+    ld a,0
+    call dg_text
+    call S_LCD_BLIT
+    xor a
+    ld (v_ui3),a                 ; page 0..7
+dg_ram_page:
+    ld a,(v_ui3)
+    cp 1
+    jr z,dg_ram_live
+    call S_RAM_PAGE
+    ld hl,$C000                  ; pass 1: address pattern
+dg_ram_w1:
+    ld a,l
+    xor h
+    ld (hl),a
+    inc hl
+    ld a,h
+    or l
+    jr nz,dg_ram_w1
+    ld hl,$C000
+dg_ram_v1:
+    ld a,l
+    xor h
+    cp (hl)
+    jr nz,dg_ram_bad
+    inc hl
+    ld a,h
+    or l
+    jr nz,dg_ram_v1
+    ld hl,$C000                  ; pass 2: complement
+dg_ram_w2:
+    ld a,l
+    xor h
+    cpl
+    ld (hl),a
+    inc hl
+    ld a,h
+    or l
+    jr nz,dg_ram_w2
+    ld hl,$C000
+dg_ram_v2:
+    ld a,l
+    xor h
+    cpl
+    cp (hl)
+    jr nz,dg_ram_bad
+    inc hl
+    ld a,h
+    or l
+    jr nz,dg_ram_v2
+    ld hl,dg_s_ok
+    jr dg_ram_res
+dg_ram_bad:
+    ld hl,dg_s_fail
+    jr dg_ram_res
+dg_ram_live:
+    ld hl,dg_s_live
+dg_ram_res:
+    push hl
+    ld de,dg_s_ok                ; pass -> set the page bit
+    or a
+    sbc hl,de
+    jr nz,dg_ram_nb
+    ld a,(v_ui3)
+    ld b,a
+    ld a,1
+    inc b
+dg_ram_sh:
+    dec b
+    jr z,dg_ram_set
+    add a,a
+    jr dg_ram_sh
+dg_ram_set:
+    ld hl,v_dgram
+    or (hl)
+    ld (hl),a
+dg_ram_nb:
+    pop hl
+    push hl
+    xor a
+    call S_RAM_PAGE              ; back to page 0 for the screen helpers (its contents were test data)
+    xor a
+    ld (v_dictok),a              ; the T9 dictionary lived there: reload on next use
+    ld a,(v_ui3)
+    add a,'0'
+    ld (dg_s_page+5),a
+    ld a,(v_ui3)
+    and 3
+    inc a                        ; line 1..4
+    ld e,a
+    ld a,(v_ui3)
+    ld b,0
+    cp 4
+    jr c,dg_ram_c
+    ld b,13
+dg_ram_c:
+    ld a,e
+    ld hl,dg_s_page
+    push bc
+    call dg_text
+    pop bc
+    pop hl
+    ld a,(v_ui3)
+    and 3
+    inc a
+    inc b
+    inc b
+    inc b
+    inc b
+    inc b
+    inc b
+    inc b
+    call dg_text
+    call S_LCD_BLIT
+    ld a,(v_ui3)
+    inc a
+    ld (v_ui3),a
+    cp 8
+    jp c,dg_ram_page
+    call S_WAIT_KEY
+    ret
+dg_s_ramwarn: .db "TESTING 8 X 16 KB...",0
+dg_s_page:    .db "PAGE 0",0
+dg_s_live:    .db "LIVE",0
+
+; ---- 5: flash -----------------------------------------------------------------------------------------------------
+dg_flash:
+    xor a
+    ld (v_dgfl),a
+    ld hl,STR_DG_5
+    call dg_begin
+    ld hl,dg_s_flwarn
+    ld b,0
+    ld a,0
+    call dg_text
+    ld hl,dg_s_flwarn2
+    ld b,0
+    ld a,1
+    call dg_text
+    ld hl,dg_s_flask
+    ld b,0
+    ld a,2
+    call dg_text
+    call ui_wait_any
+    cp K_ENTER
+    ret nz
+    ld hl,STR_DG_5
+    call dg_begin
+    ; a) the guard must refuse boot, certificate, privileged, OS ($00-$06) and unowned ($1F) pages (nothing is written)
+    ld hl,dg_guard_pages
+    ld c,8
+    xor a
+    ld (v_ui2),a                 ; refusals counted
+dg_fl_g:
+    ld a,(hl)
+    inc hl
+    push hl
+    push bc
+    ld b,a
+    ld hl,$4000
+    xor a
+    call S_FLASH_WRITE_BYTE
+    pop bc
+    pop hl
+    jr nc,dg_fl_gn               ; NOT refused: bad
+    ld a,(v_ui2)
+    inc a
+    ld (v_ui2),a
+dg_fl_gn:
+    dec c
+    jr nz,dg_fl_g
+    ld hl,dg_s_guard
+    ld b,0
+    ld a,0
+    call dg_text
+    ld a,(v_ui2)
+    cp 8
+    ld hl,dg_s_ok
+    jr nz,dg_fl_g3
+    ld a,(v_dgfl)
+    or 1
+    ld (v_dgfl),a
+    jr dg_fl_g2
+dg_fl_g3:
+    ld hl,dg_s_fail
+dg_fl_g2:
+    ld b,13
+    ld a,0
+    call dg_text
+    call S_LCD_BLIT
+    ; b) erase the scratch sector and verify $FF
+    ld b,PG_SCRATCH
+    call S_FLASH_ERASE_SECTOR
+    ld hl,dg_s_erase
+    ld b,0
+    ld a,1
+    call dg_text
+    ld hl,dg_s_fail
+    jr c,dg_fl_e1
+    call dg_scratch_blank
+    ld hl,dg_s_ok
+    jr nz,dg_fl_e1f
+    ld a,(v_dgfl)
+    or 2
+    ld (v_dgfl),a
+    jr dg_fl_e1
+dg_fl_e1f:
+    ld hl,dg_s_fail
+dg_fl_e1:
+    ld b,13
+    ld a,1
+    call dg_text
+    call S_LCD_BLIT
+    ; c) program a byte and read it back
+    ld a,$A5
+    ld b,PG_SCRATCH
+    ld hl,$4100
+    call S_FLASH_WRITE_BYTE
+    ld hl,dg_s_fail
+    jr c,dg_fl_p1
+    ld a,PG_SCRATCH
+    ld hl,$4100
+    ld de,WORKBUF
+    ld bc,1
+    call S_BANK_COPY
+    ld a,(WORKBUF)
+    ld hl,dg_s_fail
+    cp $A5
+    jr nz,dg_fl_p1
+    ld hl,dg_s_ok
+    ld a,(v_dgfl)
+    or 4
+    ld (v_dgfl),a
+dg_fl_p1:
+    push hl
+    ld hl,dg_s_prog
+    ld b,0
+    ld a,2
+    call dg_text
+    pop hl
+    ld b,13
+    ld a,2
+    call dg_text
+    call S_LCD_BLIT
+    ; d) erase again and verify
+    ld b,PG_SCRATCH
+    call S_FLASH_ERASE_SECTOR
+    ld hl,dg_s_fail
+    jr c,dg_fl_e2
+    call dg_scratch_blank
+    ld hl,dg_s_ok
+    jr nz,dg_fl_e2f
+    ld a,(v_dgfl)
+    or 8
+    ld (v_dgfl),a
+    jr dg_fl_e2
+dg_fl_e2f:
+    ld hl,dg_s_fail
+dg_fl_e2:
+    push hl
+    ld hl,dg_s_erase2
+    ld b,0
+    ld a,3
+    call dg_text
+    pop hl
+    ld b,13
+    ld a,3
+    call dg_text
+    call ui_wait_any
+    ret
+
+dg_scratch_blank:                ; Z if the first 64 bytes of the scratch sector read $FF
+    ld a,PG_SCRATCH
+    ld hl,$4000
+    ld de,WORKBUF
+    ld bc,64
+    call S_BANK_COPY
+    ld hl,WORKBUF
+    ld b,64
+dg_sb_l:
+    ld a,(hl)
+    inc a
+    ret nz
+    inc hl
+    djnz dg_sb_l
+    xor a
+    ret
+
+dg_guard_pages: .db $7F,$7E,$7C,$06,$03,$02,$00,$1F
+dg_s_flwarn:  .db "ERASES/PROGRAMS SCRATCH",0
+dg_s_flwarn2: .db "SECTOR $74-$77 ONLY.",0
+dg_s_flask:   .db "ENTER=RUN  CLEAR=BACK",0
+dg_s_guard:   .db "GUARD (8)",0
+dg_s_erase:   .db "ERASE SECTOR",0
+dg_s_prog:    .db "PROGRAM+READ",0
+dg_s_erase2:  .db "ERASE AGAIN",0
+
+; ---- 6: ESP32 report ---------------------------------------------------------------------------------------------------
+dg_esp:
+    call show_wait
+    xor a
+    ld (INBUF),a
+    ld hl,INBUF
+    ld b,0
+    ld a,CMD_DIAG
+    call S_LINK_REQUEST
+    jp c,net_fail
+    call inflate_reply
+    jp viewer

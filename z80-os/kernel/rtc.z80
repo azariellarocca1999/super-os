@@ -1,0 +1,73 @@
+; =============================================================================
+; Real-time clock: crystal timer 1 (128 Hz / 128 = 1 s) interrupts every second.
+; The wall clock is set by NTP (CMD_TIME from the ESP32) or by hand in Settings.
+; The clock pauses while the calculator is in deep sleep (timers are off by design).
+; =============================================================================
+rtc_tick:                       ; called from the ISR once per second
+    push hl
+    ld hl,(v_sec)
+    inc hl
+    ld (v_sec),hl
+    ld a,h
+    or l
+    jr nz,rtc_tick_c
+    ld hl,(v_sec+2)
+    inc hl
+    ld (v_sec+2),hl
+rtc_tick_c:
+    ld a,(v_idle)
+    inc a
+    jr z,rtc_tick_s             ; saturate at 255
+    ld (v_idle),a
+rtc_tick_s:
+    ld a,(v_clks)
+    inc a
+    cp 60
+    jr c,rtc_tick_store
+    xor a
+    ld (v_clks),a
+    ld a,(v_clkm)
+    inc a
+    cp 60
+    jr c,rtc_tick_m
+    xor a
+    ld (v_clkm),a
+    ld a,(v_clkh)
+    inc a
+    cp 24
+    jr c,rtc_tick_h
+    xor a
+rtc_tick_h:
+    ld (v_clkh),a
+    jr rtc_tick_flag
+rtc_tick_m:
+    ld (v_clkm),a
+    jr rtc_tick_flag
+rtc_tick_store:
+    ld (v_clks),a
+rtc_tick_flag:
+    ld a,(v_flags)
+    set F_RTCTICK,a
+    ld (v_flags),a
+    pop hl
+    ret
+
+rtc_get:                        ; -> H = hour, L = minute
+    di
+    ld a,(v_clkh)
+    ld h,a
+    ld a,(v_clkm)
+    ld l,a
+    ei
+    ret
+
+rtc_set:                        ; H = hour, L = minute (seconds restart at 0)
+    di
+    ld a,h
+    ld (v_clkh),a
+    ld a,l
+    ld (v_clkm),a
+    xor a
+    ld (v_clks),a
+    ei
+    ret

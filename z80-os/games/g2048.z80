@@ -1,0 +1,492 @@
+; =============================================================================
+; 2048 (native).  Slide the tiles with the arrows; equal tiles merge.  ALPHA / DEL undoes the last move (once), MODE / CLEAR pause.
+; Tiles from 64 up are drawn inverted.  Reaching 2048 shows a message and the game goes on.
+; =============================================================================
+g2_grid     .equ GV+0           ; 16 exponents (0 empty, 1 = 2, 2 = 4, ...)
+g2_prev     .equ GV+16          ; grid before the last move (undo)
+g2_t        .equ GV+32          ; line work area (in)
+g2_o        .equ GV+36          ; (out)
+g2_score    .equ GV+40          ; 16-bit
+g2_pscore   .equ GV+42          ; score before the last move
+g2_moved    .equ GV+44
+g2_dir      .equ GV+45
+g2_line     .equ GV+46
+g2_dirty    .equ GV+47
+g2_won      .equ GV+48
+g2_canundo  .equ GV+49
+g2_idx      .equ GV+50          ; start index of the line being processed / tile being drawn
+g2_stp      .equ GV+51          ; step of the line (signed)
+g2_tx       .equ GV+52
+g2_ty       .equ GV+53
+g2_val      .equ GV+54          ; 16-bit tile value / pending tile
+
+game_2048:
+    ld a,4
+    ld b,4
+    call gl_init
+g2_restart:
+    ld hl,g2_grid
+    ld de,g2_grid+1
+    ld bc,15
+    ld (hl),0
+    ldir
+    ld hl,0
+    ld (g2_score),hl
+    xor a
+    ld (g2_won),a
+    ld (g2_canundo),a
+    call g2_spawn
+    call g2_spawn
+    ld a,1
+    ld (g2_dirty),a
+g2_loop:
+    call gl_tick
+    ld a,(gl_press)
+    and GK_Q|GK_P
+    jr z,g2_nop
+    call gl_pause
+    jp c,g2_quit
+    ld a,1
+    ld (g2_dirty),a
+g2_nop:
+    ld a,(gl_press)
+    and GK_B
+    call nz,g2_undo
+    ld a,(gl_press)
+    ld b,a
+    ld e,$FF
+    bit 0,b
+    jr z,g2_k1
+    ld e,0
+g2_k1:
+    bit 1,b
+    jr z,g2_k2
+    ld e,1
+g2_k2:
+    bit 2,b
+    jr z,g2_k3
+    ld e,2
+g2_k3:
+    bit 3,b
+    jr z,g2_k4
+    ld e,3
+g2_k4:
+    ld a,e
+    cp $FF
+    jr z,g2_draw
+    call g2_move
+    ld a,(g2_moved)
+    or a
+    jr z,g2_draw
+    call g2_spawn
+    ld a,1
+    ld (g2_dirty),a
+    ld (g2_canundo),a
+    call g2_check_end
+    jr c,g2_over
+g2_draw:
+    ld a,(g2_dirty)
+    or a
+    jr z,g2_loop
+    xor a
+    ld (g2_dirty),a
+    call g2_render
+    call gl_flush
+    ld a,(g2_won)
+    cp 1
+    jr nz,g2_loop
+    ld a,2                      ; show the 2048 message once
+    ld (g2_won),a
+    ld hl,g2_t_win
+    call gl_lang
+    push hl
+    ld hl,g2_h_win
+    call gl_lang
+    ex de,hl
+    pop hl
+    call gl_overlay
+    call gl_flush
+g2_ww:
+    call gl_tick
+    ld a,(gl_press)
+    and GK_A|GK_P
+    jr nz,g2_wgo
+    ld a,(gl_press)
+    and GK_Q
+    jr z,g2_ww
+    jr g2_quit
+g2_wgo:
+    call gl_resync
+    ld a,1
+    ld (g2_dirty),a
+    jp g2_loop
+g2_quit:
+    jp gl_exit
+g2_over:
+    call g2_render
+    call gl_flush
+    ld hl,(g2_score)
+    call gl_gameover
+    jr c,g2_quit
+    jp g2_restart
+
+; ---- game logic ----------------------------------------------------------------------------------------------------------
+g2_spawn:                       ; a 2 (90 %) or a 4 on a random empty cell
+g2s_t:
+    ld a,16
+    call gl_rnd_n
+    ld e,a
+    ld d,0
+    ld hl,g2_grid
+    add hl,de
+    ld a,(hl)
+    or a
+    jr nz,g2s_t
+    ld a,10
+    call gl_rnd_n
+    or a
+    ld a,1
+    jr nz,g2s_s
+    inc a
+g2s_s:
+    ld (hl),a
+    ret
+
+g2_undo:
+    ld a,(g2_canundo)
+    or a
+    ret z
+    xor a
+    ld (g2_canundo),a
+    ld hl,g2_prev
+    ld de,g2_grid
+    ld bc,16
+    ldir
+    ld hl,(g2_pscore)
+    ld (g2_score),hl
+    ld a,1
+    ld (g2_dirty),a
+    ret
+
+g2_move:                        ; A = direction (0 left, 1 right, 2 up, 3 down) -> g2_moved
+    ld (g2_dir),a
+    ld hl,g2_grid               ; remember the position for undo
+    ld de,g2_prev
+    ld bc,16
+    ldir
+    ld hl,(g2_score)
+    ld (g2_pscore),hl
+    xor a
+    ld (g2_moved),a
+    ld (g2_line),a
+g2m_l:
+    ld a,(g2_dir)
+    ld e,a
+    ld d,0
+    ld hl,g2_steps
+    add hl,de
+    ld a,(hl)
+    ld (g2_stp),a
+    ld hl,g2_starts
+    add hl,de
+    ld c,(hl)                   ; C = 0, 3, 0, 12
+    ld a,(g2_dir)
+    cp 2
+    ld a,(g2_line)
+    jr nc,g2m_v
+    add a,a                     ; left / right: lines are rows: line * 4
+    add a,a
+g2m_v:
+    add a,c
+    ld (g2_idx),a
+    ld hl,g2_t                  ; read the four cells of the line
+    ld b,4
+    ld e,a
+g2m_r:
+    ld d,0
+    push hl
+    ld hl,g2_grid
+    add hl,de
+    ld a,(hl)
+    pop hl
+    ld (hl),a
+    inc hl
+    ld a,(g2_stp)
+    add a,e
+    ld e,a
+    djnz g2m_r
+    call g2_slide
+    ld ix,g2_o                  ; write the result back, noting any change
+    ld b,4
+    ld a,(g2_idx)
+    ld e,a
+g2m_w:
+    ld d,0
+    ld hl,g2_grid
+    add hl,de
+    ld a,(ix+0)
+    inc ix
+    cp (hl)
+    jr z,g2m_same
+    push af
+    ld a,1
+    ld (g2_moved),a
+    pop af
+g2m_same:
+    ld (hl),a
+    ld a,(g2_stp)
+    add a,e
+    ld e,a
+    djnz g2m_w
+    ld a,(g2_line)
+    inc a
+    ld (g2_line),a
+    cp 4
+    jr nz,g2m_l
+    ret
+g2_starts: .db 0,3,0,12
+g2_steps:  .db 1,$FF,4,$FC
+
+g2_slide:                       ; g2_t[0..3] -> g2_o[0..3]: pack, merge equal neighbours once
+    ld hl,g2_o
+    xor a
+    ld (hl),a
+    inc hl
+    ld (hl),a
+    inc hl
+    ld (hl),a
+    inc hl
+    ld (hl),a
+    ld hl,g2_t
+    ld de,g2_o
+    ld b,4                      ; B = tiles left to read, C = pending tile (0 = none)
+    ld c,0
+g2sl_l:
+    ld a,(hl)
+    inc hl
+    or a
+    jr z,g2sl_n
+    ld (g2_val),a               ; V = this tile
+    ld a,c
+    or a
+    jr z,g2sl_wait
+    ld a,(g2_val)
+    cp c
+    jr nz,g2sl_flush
+    inc a                       ; merge: the pending tile becomes the next power
+    push af
+    push hl
+    push de
+    push bc
+    ld b,a                      ; score += 2 ^ a
+    ld hl,1
+g2sl_p:
+    add hl,hl
+    djnz g2sl_p
+    ld de,(g2_score)
+    add hl,de
+    ld (g2_score),hl
+    pop bc
+    pop de
+    pop hl
+    pop af
+    ld (de),a
+    inc de
+    ld c,0
+    cp 11
+    jr nz,g2sl_n
+    ld a,(g2_won)
+    or a
+    jr nz,g2sl_n
+    ld a,1
+    ld (g2_won),a
+    jr g2sl_n
+g2sl_flush:
+    ld a,c                      ; the pending tile is final
+    ld (de),a
+    inc de
+g2sl_wait:
+    ld a,(g2_val)
+    ld c,a
+g2sl_n:
+    djnz g2sl_l
+    ld a,c
+    or a
+    ret z
+    ld (de),a
+    ret
+
+g2_check_end:                   ; CF = no move left
+    ld hl,g2_grid
+    ld b,16
+g2ce_e:
+    ld a,(hl)
+    or a
+    ret z                       ; an empty cell: NC, the game goes on
+    inc hl
+    djnz g2ce_e
+    ld c,0
+g2ce_p:
+    ld a,c
+    ld e,a
+    ld d,0
+    ld hl,g2_grid
+    add hl,de
+    ld b,(hl)                   ; this tile
+    ld a,c
+    and 3
+    cp 3
+    jr z,g2ce_nr
+    inc hl                      ; right neighbour
+    ld a,(hl)
+    dec hl
+    cp b
+    ret z
+g2ce_nr:
+    ld a,c
+    cp 12
+    jr nc,g2ce_nd
+    push hl                     ; neighbour below
+    ld de,4
+    add hl,de
+    ld a,(hl)
+    pop hl
+    cp b
+    ret z
+g2ce_nd:
+    inc c
+    ld a,c
+    cp 16
+    jr nz,g2ce_p
+    scf
+    ret
+
+; ---- drawing -------------------------------------------------------------------------------------------------------------
+g2_render:
+    call S_GFX_CLEAR
+    xor a
+    ld (g2_idx),a
+g2r_t:
+    ld a,(g2_idx)               ; tile position: x = 1 + 18 * col, y = 16 * row
+    and 3
+    ld b,a
+    add a,a
+    add a,a
+    add a,a
+    add a,b
+    add a,a
+    inc a
+    ld (g2_tx),a
+    ld a,(g2_idx)
+    and $0C
+    add a,a
+    add a,a
+    ld (g2_ty),a
+    ld a,(g2_tx)
+    ld b,a
+    ld a,(g2_ty)
+    ld c,a
+    ld d,17
+    ld e,15
+    call gl_box
+    ld a,(g2_idx)
+    ld e,a
+    ld d,0
+    ld hl,g2_grid
+    add hl,de
+    ld a,(hl)
+    or a
+    jr z,g2r_n
+    ld c,a                      ; value = 1 << exponent
+    ld hl,1
+g2r_sh:
+    add hl,hl
+    dec c
+    jr nz,g2r_sh
+    ld (g2_val),hl
+    call gl_dwidth              ; centre the number in the tile
+    ld b,a
+    ld a,17
+    sub b
+    srl a
+    ld hl,g2_tx
+    add a,(hl)
+    ld b,a
+    ld a,(g2_ty)
+    add a,5
+    ld c,a
+    ld hl,(g2_val)
+    call gl_dnum
+    ld a,(g2_idx)               ; big tiles (64 and up): invert the whole tile
+    ld e,a
+    ld d,0
+    ld hl,g2_grid
+    add hl,de
+    ld a,(hl)
+    cp 6
+    jr c,g2r_n
+    ld a,(g2_tx)
+    inc a
+    ld b,a
+    ld a,(g2_ty)
+    inc a
+    ld c,a
+    ld d,15
+    ld e,13
+    ld a,2
+    call gl_rect
+g2r_n:
+    ld a,(g2_idx)
+    inc a
+    ld (g2_idx),a
+    cp 16
+    jp nz,g2r_t
+    ld hl,g2_l_sc               ; right panel
+    call gl_lang
+    ld b,19
+    ld c,1
+    call gl_text
+    ld hl,(g2_score)
+    ld b,76
+    ld c,8
+    call gl_dnum
+    ld hl,g2_l_be
+    call gl_lang
+    ld b,19
+    ld c,22
+    call gl_text
+    call gl_hs_get
+    ld de,(g2_score)
+    ld a,h
+    cp d
+    jr c,g2r_us
+    jr nz,g2r_ub
+    ld a,l
+    cp e
+    jr nc,g2r_ub
+g2r_us:
+    ex de,hl
+g2r_ub:
+    ld b,76
+    ld c,29
+    call gl_dnum
+    ld a,(g2_canundo)
+    or a
+    ret z
+    ld hl,g2_l_un
+    call gl_lang
+    ld b,19
+    ld c,52
+    call gl_text
+    ld hl,g2_l_un2
+    call gl_lang
+    ld b,19
+    ld c,58
+    jp gl_text
+
+g2_l_sc: .db "PTS",0,"PTS",0
+g2_l_be: .db "MEJOR",0,"BEST",0
+g2_l_un: .db "ALPHA",0,"ALPHA",0
+g2_l_un2: .db "DESH.",0,"UNDO",0
+g2_t_win: .db "LLEGASTE A 2048!",0,"YOU MADE 2048!",0
+g2_h_win: .db "ENTER SIGUE CLEAR SALE",0,"ENTER GO ON CLEAR EXIT",0

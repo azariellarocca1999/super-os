@@ -1,0 +1,588 @@
+; =============================================================================
+; expr.z80 -- expression evaluator (recursive descent).  ev_eval: HL = 0-terminated tokens/ASCII -> FA, carry = error (fx_err).
+;   expr  := term (('+'|'-') term)*            term := unary (('*'|'/'| implicit) unary)*
+;   unary := ('-'|'+') unary | power           power := post ('^' unary)?
+;   post  := prim ('!' | '%')*                 prim := number | '(' expr ')' | var | const | func '(' expr [',' expr] ')'
+; Variables: A..Z (fx_vars), ANS.  fx_angle = 1 makes the trig functions work in degrees.
+; =============================================================================
+ev_eval:
+    ld (ev_p),hl
+    ld (ev_sp),sp
+    xor a
+    ld (fx_err),a
+    call ev_expr
+    ld hl,(ev_p)
+    ld a,(hl)
+    or a
+    jr nz,ev_syn
+    ld a,(fx_err)
+    or a
+    ret z                       ; carry clear
+    scf
+    ret
+ev_evald:                       ; evaluate with degrees
+    ld a,1
+    ld (fx_angle),a
+    call ev_eval
+    push af
+    xor a
+    ld (fx_angle),a
+    pop af
+    ret
+
+fx_init:                        ; clear variables, set defaults
+    ld hl,fx_vars
+    ld de,fx_vars+1
+    ld bc,fx_vend-fx_vars-1
+    ld (hl),0
+    ldir
+    xor a
+    ld (fx_angle),a
+    ld (fx_err),a
+    ld a,9
+    ld (fx_ndig),a
+    ret
+
+fx_stvar:                       ; A = variable index (0..26): variable = FA
+    ld l,a
+    ld h,0
+    ld d,h
+    ld e,l
+    add hl,hl
+    add hl,de
+    add hl,hl
+    ld de,fx_vars
+    add hl,de
+    ex de,hl
+    ld hl,fx_a
+    ld bc,6
+    ldir
+    ret
+
+ev_syn:
+    ld a,4
+    ld (fx_err),a
+    ld sp,(ev_sp)
+    scf
+    ret
+
+ev_push:                        ; push FA under the return address
+    pop de
+    ld hl,(fx_a)
+    push hl
+    ld hl,(fx_a+2)
+    push hl
+    ld hl,(fx_a+4)
+    push hl
+    push de
+    ret
+ev_pop:                         ; pop into FA
+    pop de
+    pop hl
+    ld (fx_a+4),hl
+    pop hl
+    ld (fx_a+2),hl
+    pop hl
+    ld (fx_a),hl
+    push de
+    ret
+
+ev_peek:                        ; A = current char, HL = pointer
+    ld hl,(ev_p)
+    ld a,(hl)
+    ret
+ev_adv:                         ; skip one char
+    ld hl,(ev_p)
+    inc hl
+    ld (ev_p),hl
+    ret
+
+ev_expr:
+    call ev_term
+ev_ex1:
+    call ev_peek
+    cp '+'
+    jr z,ev_ex2
+    cp '-'
+    ret nz
+ev_ex2:
+    ld c,a
+    push bc
+    call ev_adv
+    call ev_push
+    call ev_term
+    call fx_ab
+    call ev_pop
+    pop bc
+    ld a,c
+    cp '+'
+    jr nz,ev_ex3
+    call fx_add
+    jr ev_ex1
+ev_ex3:
+    call fx_sub
+    jr ev_ex1
+
+ev_term:
+    call ev_unary
+ev_tm1:
+    call ev_peek
+    cp '*'
+    jr z,ev_tm2
+    cp '/'
+    jr z,ev_tm2
+    cp '('
+    jr z,ev_tm3                 ; implicit multiplication
+    cp 'A'
+    jr c,ev_tm4
+    cp 'Z'+1
+    jr c,ev_tm3
+ev_tm4:
+    cp $80
+    ret c
+    cp T_EE
+    ret z
+    jr ev_tm3
+ev_tm2:
+    ld c,a
+    push bc
+    call ev_adv
+    jr ev_tm5
+ev_tm3:
+    ld c,'*'
+    push bc
+ev_tm5:
+    call ev_push
+    call ev_unary
+    call fx_ab
+    call ev_pop
+    pop bc
+    ld a,c
+    cp '*'
+    jr nz,ev_tm6
+    call fx_mul
+    jr ev_tm1
+ev_tm6:
+    call fx_div
+    jr ev_tm1
+
+ev_unary:
+    call ev_peek
+    cp '-'
+    jr z,ev_un1
+    cp '+'
+    jr z,ev_un2
+    jp ev_power
+ev_un1:
+    call ev_adv
+    call ev_unary
+    jp fx_neg
+ev_un2:
+    call ev_adv
+    jp ev_unary
+
+ev_power:
+    call ev_post
+    call ev_peek
+    cp '^'
+    ret nz
+    call ev_adv
+    call ev_push
+    call ev_unary
+    call fx_ab
+    call ev_pop
+    jp fx_pow
+
+ev_post:
+    call ev_prim
+ev_po1:
+    call ev_peek
+    cp '!'
+    jr z,ev_po2
+    cp '%'
+    ret nz
+    call ev_adv
+    ld hl,fxk_p2
+    call fx_kb
+    call fx_div
+    jr ev_po1
+ev_po2:
+    call ev_adv
+    call fx_fact
+    jr ev_po1
+
+ev_prim:
+    call ev_peek
+    or a
+    jp z,ev_syn
+    cp '('
+    jr z,ev_par
+    cp '.'
+    jr z,ev_num
+    cp '0'
+    jr c,ev_pr1
+    cp '9'+1
+    jr c,ev_num
+    cp 'A'
+    jr c,ev_pr1
+    cp 'Z'+1
+    jr c,ev_var
+ev_pr1:
+    cp T_PI
+    jr z,ev_pi
+    cp T_ANS
+    jr z,ev_ans
+    cp T_E
+    jr z,ev_e
+    cp $80
+    jp c,ev_syn
+    cp T_TENX+1
+    jp nc,ev_syn
+    jp ev_func
+ev_par:
+    call ev_adv
+    call ev_expr
+    jr ev_closep
+ev_closep:
+    call ev_peek
+    cp ')'
+    ret nz
+    jp ev_adv
+ev_num:
+    call fx_fromstr
+    jp c,ev_syn
+    ld (ev_p),hl
+    ret
+ev_pi:
+    call ev_adv
+    ld hl,fxk_pi
+    jp fx_lda
+ev_e:
+    call ev_adv
+    ld hl,fxk_e
+    jp fx_lda
+ev_ans:
+    call ev_adv
+    ld a,26
+    jr ev_var2
+ev_var:
+    sub 'A'
+    push af
+    call ev_adv
+    pop af
+ev_var2:
+    ld l,a
+    ld h,0
+    ld d,h
+    ld e,l
+    add hl,hl
+    add hl,de
+    add hl,hl                   ; *6
+    ld de,fx_vars
+    add hl,de
+    jp fx_lda
+
+; ---- functions: token in A ------------------------------------------------------------------------
+ev_func:
+    ld c,a
+    call ev_adv
+    ld hl,ev_ftab
+ev_f1:
+    ld a,(hl)
+    or a
+    jp z,ev_syn
+    cp c
+    jr z,ev_f2
+    inc hl
+    inc hl
+    inc hl
+    inc hl
+    jr ev_f1
+ev_f2:
+    inc hl
+    ld b,(hl)                   ; kind
+    inc hl
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    push de
+    push bc
+    call ev_expr
+    pop bc
+    push bc
+    ld a,b
+    cp 3
+    jr nz,ev_f3
+    call ev_peek
+    cp ','
+    jp nz,ev_syn
+    call ev_adv
+    call ev_push
+    call ev_expr
+    call ev_closep
+    call fx_ab
+    call ev_pop
+    jr ev_f5
+ev_f3:
+    call ev_closep
+    pop bc
+    push bc
+    ld a,b
+    cp 1
+    jr nz,ev_f5
+ev_f4:
+    ld a,(fx_angle)
+    or a
+    jr z,ev_f5
+    ld hl,fxk_degrad
+    call fx_kb
+    call fx_mul
+ev_f5:
+    pop bc
+    pop de
+    push bc
+    call ev_callde
+    pop bc
+    ld a,b
+    cp 2
+    ret nz
+    ld a,(fx_angle)
+    or a
+    ret z
+    ld hl,fxk_raddeg
+    call fx_kb
+    jp fx_mul
+ev_callde:
+    push de
+    ret
+
+; kind 0 plain, 1 trig (argument in angle units), 2 inverse trig (result in angle units), 3 two arguments
+ev_ftab:
+    .db T_SIN,1
+    .dw fx_sin
+    .db T_COS,1
+    .dw fx_cos
+    .db T_TAN,1
+    .dw fx_tan
+    .db T_ASIN,2
+    .dw fx_asin
+    .db T_ACOS,2
+    .dw fx_acos
+    .db T_ATAN,2
+    .dw fx_atan
+    .db T_SINH,0
+    .dw fx_sinh
+    .db T_COSH,0
+    .dw fx_cosh
+    .db T_TANH,0
+    .dw fx_tanh
+    .db T_ASINH,0
+    .dw fx_asinh
+    .db T_ACOSH,0
+    .dw fx_acosh
+    .db T_ATANH,0
+    .dw fx_atanh
+    .db T_LN,0
+    .dw fx_ln
+    .db T_LOG,0
+    .dw fx_log10
+    .db T_LOG2,0
+    .dw fx_log2
+    .db T_SQRT,0
+    .dw fx_sqrt
+    .db T_CBRT,0
+    .dw fx_cbrt
+    .db T_EXP,0
+    .dw fx_exp
+    .db T_ABS,0
+    .dw fx_abs
+    .db T_FLOOR,0
+    .dw fx_floor
+    .db T_CEIL,0
+    .dw fx_ceil
+    .db T_INT,0
+    .dw fx_trunc
+    .db T_FRAC,0
+    .dw fx_frac
+    .db T_SIGN,0
+    .dw fx_sign
+    .db T_ROUND,3
+    .dw fx_round
+    .db T_MOD,3
+    .dw fx_mod
+    .db T_NCR,3
+    .dw fx_ncr
+    .db T_NPR,3
+    .dw fx_npr
+    .db T_MIN,3
+    .dw fx_minf
+    .db T_MAX,3
+    .dw fx_maxf
+    .db T_TENX,0
+    .dw fx_exp10
+    .db 0
+
+; ---- helper functions used by the table ---------------------------------------------------------------------
+fx_cbrt:
+    ld a,(fx_a)
+    or a
+    ret z
+    ld a,(fx_a+1)
+    ld (fx_misc+2),a
+    xor a
+    ld (fx_a+1),a
+    call fx_ln
+    ld hl,fxk_three
+    call fx_kb
+    call fx_div
+    call fx_exp
+    ld a,(fx_misc+2)
+    or a
+    ret z
+    jp fx_neg
+
+fx_frac:                        ; x - trunc(x)
+    ld hl,fx_a
+    ld de,fx_sav
+    ld bc,6
+    ldir
+    call fx_trunc
+    call fx_ab
+    ld hl,fx_sav
+    call fx_lda
+    jp fx_sub
+
+fx_sign:
+    ld a,(fx_a)
+    or a
+    ret z
+    ld a,(fx_a+1)
+    push af
+    call fx_one
+    pop af
+    or a
+    ret z
+    jp fx_neg
+
+fx_minf:
+    call fx_cmp
+    ret c
+    jp fx_ba
+fx_maxf:
+    call fx_cmp
+    ret z
+    jp c,fx_ba
+    ret
+
+fx_round:                       ; round(FA, FB digits)
+    ld hl,fx_a
+    ld de,fx_c
+    ld bc,6
+    ldir
+    call fx_ba
+    call fx_to_i16
+    ld a,l
+    cp 16
+    jr c,fx_rd1
+    xor a
+fx_rd1:
+    ld (fx_misc+3),a
+    ld hl,fx_c
+    call fx_lda
+    ld a,(fx_a+1)
+    ld (fx_misc+2),a
+    xor a
+    ld (fx_a+1),a
+    ld a,(fx_misc+3)
+    call fx_p10                 ; FB = 10^n
+    call fx_mul
+    ld hl,fxk_half
+    call fx_kb
+    call fx_add
+    call fx_floor
+    ld a,(fx_misc+3)
+    call fx_p10
+    call fx_div
+    ld a,(fx_misc+2)
+    or a
+    ret z
+    jp fx_neg
+
+fx_npr:                         ; n (FA), r (FB): n (n-1) ... (n-r+1)
+    ld hl,fx_a
+    ld de,fx_c
+    ld bc,6
+    ldir
+    ld hl,fx_b
+    ld de,fx_d
+    ld bc,6
+    ldir
+    ld a,(fx_c+1)
+    ld hl,fx_d+1
+    or (hl)
+    jp nz,fx_domain
+    ld hl,fx_d
+    call fx_lda
+    call fx_to_i16
+    ld a,h
+    or a
+    jp nz,fx_domain
+    ld a,l
+    ld (fx_flag),a              ; r
+    call fx_one
+    ld hl,fx_a
+    ld de,fx_e
+    ld bc,6
+    ldir                        ; result = 1
+fx_np1:
+    ld a,(fx_flag)
+    or a
+    jr z,fx_np2
+    ld hl,fx_c
+    call fx_lda
+    ld hl,fx_e
+    call fx_kb
+    call fx_mul
+    ld hl,fx_a
+    ld de,fx_e
+    ld bc,6
+    ldir
+    ld hl,fx_c
+    call fx_lda
+    call fx_one_b
+    call fx_sub
+    ld hl,fx_a
+    ld de,fx_c
+    ld bc,6
+    ldir
+    ld hl,fx_flag
+    dec (hl)
+    jr fx_np1
+fx_np2:
+    ld hl,fx_e
+    jp fx_lda
+
+fx_one_b:                       ; FB = 1
+    ld hl,fxk_one
+    jp fx_ldb
+
+fx_ncr:                         ; nPr / r!
+    ld hl,fx_b
+    ld de,fx_misc+4
+    ld bc,6
+    ldir                        ; keep r (fx_misc+4..9)
+    call fx_npr
+    ld a,(fx_err)
+    or a
+    ret nz
+    ld hl,fx_a
+    ld de,fx_u
+    ld bc,6
+    ldir
+    ld hl,fx_misc+4
+    call fx_lda
+    call fx_fact
+    call fx_ab
+    ld hl,fx_u
+    call fx_lda
+    jp fx_div

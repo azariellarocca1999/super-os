@@ -1,0 +1,40 @@
+; CHIP-8 interpreter test stub: page 0 of a throw-away ROM.  Provides the two syscalls the interpreter page needs,
+; loads build/c8_rom.inc into CHIP-8 memory, runs `c8_count` instructions and leaves the state in RAM ($A000..$A1FF, window page 2).
+#include "kernel/superos.inc"
+.org $0000
+    di
+    jp start
+.fill $0121-$,0
+    jp s_bank_copy              ; $0121 S_BANK_COPY
+.fill $0151-$,0
+    jp s_ram_page               ; $0151 S_RAM_PAGE
+s_bank_copy:
+    ldir
+    ret
+s_ram_page:
+    out (P_RAMPAGE),a
+    ret
+start:
+    ld sp,$BFFF
+    ld a,1
+    out (P_SPEED),a
+    ld a,5
+    out (P_BANKA),a
+    ld a,$81
+    out (P_BANKB),a
+    ld hl,c8_rom
+    ld bc,(c8_len)
+    ld a,0
+    call $4009                  ; c8_prepare (A = flash page, unused here)
+    ld hl,(c8_keymask)
+    ld (c8_keys_addr),hl
+    ld bc,(c8_count)
+    call $400C                  ; c8_run_n
+    ld a,$5A
+    ld (c8_done_addr),a
+done:
+    halt
+    jr done
+c8_keys_addr .equ $A047
+c8_done_addr .equ $A05F
+#include "c8_rom.inc"
