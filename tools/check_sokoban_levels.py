@@ -13,7 +13,7 @@ if len(levels) != 8:
     bad += 1
 for i, lv in enumerate(levels, 1):
     problems = L.validate(lv)
-    sol = None if problems else L.solve(lv)
+    sol = None if problems else L.solve(lv, fast=True)
     if sol is None and not problems:
         problems.append("no solution found")
     print("level %d: %dx%d %s" % (i, max(map(len, lv)), len(lv), ("%d moves" % len(sol)) if sol else "; ".join(problems)))

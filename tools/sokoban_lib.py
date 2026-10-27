@@ -91,8 +91,47 @@ def _path(prev, dst):
     return keys[::-1]
 
 
-def solve(level, limit=400000):
-    """Shortest-push solution as a list of key names (None when there is none within the limit)."""
+def _solve_fast(level, limit):
+    """Greedy best-first: box-to-goal distances guide the search; the first solution found (not the shortest)."""
+    import heapq
+    walls, goals, boxes, player = parse(level)
+    goals = frozenset(goals)
+    glist = sorted(goals)
+
+    def h(bx):
+        return sum(min(abs(b[0] - g[0]) + abs(b[1] - g[1]) for g in glist) for b in bx if b not in goals)
+
+    start = frozenset(boxes)
+    seen = {(start, min(_reach(walls, start, player)))}
+    heap = [(h(start), 0, start, player, [])]
+    n = 0
+    while heap:
+        _, _, bx, pl, keys = heapq.heappop(heap)
+        if bx == goals:
+            return keys
+        pr = _reach(walls, bx, pl)
+        for b in bx:
+            for k, (dx, dy) in DIRS.items():
+                src, dst = (b[0] - dx, b[1] - dy), (b[0] + dx, b[1] + dy)
+                if src not in pr or dst in walls or dst in bx:
+                    continue
+                nb = frozenset((bx - {b}) | {dst})
+                key = (nb, min(_reach(walls, nb, b)))
+                if key in seen:
+                    continue
+                seen.add(key)
+                if len(seen) > limit:
+                    return None
+                n += 1
+                heapq.heappush(heap, (h(nb), n, nb, b, keys + _path(pr, src) + [k]))
+    return None
+
+
+def solve(level, limit=400000, fast=False):
+    """A solution as a list of key names (None when there is none within the limit): the shortest in pushes by default, or with fast=True the
+    first one a greedy search finds (far quicker; used by the CI check)."""
+    if fast:
+        return _solve_fast(level, limit)
     walls, goals, boxes, player = parse(level)
     goals = frozenset(goals)
     start = frozenset(boxes)
