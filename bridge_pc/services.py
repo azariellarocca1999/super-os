@@ -201,7 +201,7 @@ WMO_EN = {0: "CLEAR SKY", 1: "MAINLY CLEAR", 2: "PARTLY CLOUDY", 3: "OVERCAST", 
 
 
 def http_json(url, timeout=20):
-    req = urllib.request.Request(url, headers={"User-Agent": "Super-OS/0.3 (TI-83 Plus SE co-processor)"})
+    req = urllib.request.Request(url, headers={"User-Agent": "Super-OS/1.0 (TI-83 Plus SE co-processor)"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
 

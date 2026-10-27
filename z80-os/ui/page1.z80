@@ -19,7 +19,7 @@ ui_entry:
     call ui_crashreport
     ld a,(s_lock)
     or a
-    call nz,ui_unlock           ; a lock set before the restart is still on
+    call nz,S_LOCK_UNLOCK       ; a lock set before the restart is still on
 #if AUTOGAME
     ld ix,AUTOGAME
     ld a,5

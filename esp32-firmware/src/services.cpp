@@ -202,7 +202,7 @@ static bool http_get(const String &url, String &out) {
   cfg.buffer_size = 2048;
   esp_http_client_handle_t cli = esp_http_client_init(&cfg);
   if (!cli) return false;
-  esp_http_client_set_header(cli, "User-Agent", "Super-OS/0.3 (TI-83 Plus SE co-processor)");
+  esp_http_client_set_header(cli, "User-Agent", "Super-OS/1.0 (TI-83 Plus SE co-processor)");
   esp_err_t err = esp_http_client_perform(cli);
   int code = esp_http_client_get_status_code(cli);
   esp_http_client_cleanup(cli);

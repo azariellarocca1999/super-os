@@ -14,13 +14,13 @@ tab0:
     .dw STR_APP_WIFI,app_wifi
     .db $80
     .dw STR_APP_SET,app_settings
-    .db 0
+    .db $80
     .dw STR_APP_SLEEP,app_sleep
     .db 0
     .dw STR_APP_INFO,app_info
     .db 0
     .dw STR_APP_BOOKS,app_books
-    .db 0
+    .db $80
     .dw $FFFF
 tab1:
     .dw STR_APP_CALC,app_calc
@@ -32,13 +32,13 @@ tab1:
     .dw STR_APP_STEP,app_step
     .db $80
     .dw STR_APP_PTABLE,app_ptable
-    .db 0
+    .db $80
     .dw STR_APP_CONV,app_conv
-    .db 0
+    .db $80
     .dw STR_APP_CONST,app_const
-    .db 0
+    .db $80
     .dw STR_APP_NOTES,app_notes
-    .db 0
+    .db $80
     .dw $FFFF
 tab2:
     .dw STR_APP_CHAT,app_chat
@@ -80,7 +80,7 @@ tab4:
     .dw STR_APP_CLOCK,app_clock
     .db 0
     .dw STR_APP_SET,app_settings
-    .db 0
+    .db $80
     .dw STR_APP_SLEEP,app_sleep
     .db 0
     .dw STR_APP_INFO,app_info
@@ -88,7 +88,7 @@ tab4:
     .dw STR_APP_OTA,app_ota
     .db $80
     .dw STR_APP_DIAG,app_diag
-    .db 0
+    .db $80
     .dw STR_APP_LOCK,app_lock
     .db 0
     .dw $FFFF
@@ -279,16 +279,6 @@ home_loop:
     call S_LCD_BLIT
     call S_WAIT_KEY
     ld b,a
-    ld hl,v_flags
-    bit F_LOCKREQ,(hl)
-    jr z,home_unlocked
-    res F_LOCKREQ,(hl)          ; just woke up: with the lock on, the PIN comes before anything else (the key that woke us is dropped)
-    ld a,(s_lock)
-    or a
-    jr z,home_unlocked
-    call ui_unlock
-    jp home_loop
-home_unlocked:
     ld a,b
     cp K_PLUS                   ; + / -: contrast trim, live; written to the flash journal on the next other key
     jr z,home_cup

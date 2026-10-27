@@ -64,7 +64,7 @@ Native games, `1` to `8` (Tetris, Snake, Breakout, Pong, 2048, Invaders, Mineswe
 ## 5c. Lock, exam mode, notes, contrast shortcut
 
 * `+` / `-` on the launcher change the contrast at once; after the next other key the value survives a battery pull.
-* `F5`, `8 LOCK`: `1` set a PIN twice, then `2ND+ON` (sleep) and wake: the PIN screen must come before anything else, a wrong PIN is refused. `2` exam mode: games, AI and network entries answer `MODO EXAMEN: CERRADO`. `3` turns it off. Test the way out **before** relying on it: there is no back door (a forgotten PIN = reinstall the OS).
+* `F5`, `8 LOCK`: `1` set a PIN twice, then `2ND+ON` (sleep) and wake: the PIN screen must come before anything else, a wrong PIN is refused. `2` exam mode: games, AI, network, reference tools, notes, settings and diagnostics answer `EXAMEN: CERRADO`. Also sleep inside the calculator and inside a game: the PIN screen must come first and the picture must come back after it. `3` turns it off. Test the way out **before** relying on it: there is no back door (a forgotten PIN = reinstall the OS).
 * `F2`, `8 NOTES`: write a note, leave, reopen it (the text must be there), sleep and wake, erase it with `DEL` then its number.
 
 ## 5b. CHIP-8 classics (F4 `8`): no ESP32 needed

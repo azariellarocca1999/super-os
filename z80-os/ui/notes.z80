@@ -179,7 +179,7 @@ nt_draw:
     ld c,a
     ld b,0
     ld hl,PLOTSSCREEN
-    call S_PUTS
+    call S_PUTS_SMALL           ; (the small font in every font setting: 22 characters per line)
     ld hl,v_ui0
     inc (hl)
     ld a,(hl)
@@ -198,14 +198,14 @@ nt_draw:
     call nt_digit
     cp $FF
     jr z,nt_list
-    ld (v_ui1),a
+    ld (v_ui3),a                ; (the text editor uses v_ui1 as a line counter: the slot must not live there)
     call nt_load
     ld hl,STR_NT_EDIT
     call tr
     ld a,4                      ; edit the text that is already in EDBUF
     call S_TEXT_EDIT
     jr c,nt_list                ; CLEAR: the note stays as it was
-    ld a,(v_ui1)
+    ld a,(v_ui3)
     call nt_save
     jr nt_list
 nt_del:                         ; DEL, then the number of the note

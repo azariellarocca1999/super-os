@@ -11,6 +11,7 @@ below is verified **in the emulator only** unless it says otherwise. The ESP32 f
 
 ## What is new since the first hardware contact
 * **Nine native games** (`z80-os/games/`: Tetris, Snake, Breakout, Pong, 2048, Space Invaders, Minesweeper, Sokoban, Reversi) on a shared library with a tile-based LCD flush and best scores in the flash journal; the six CHIP-8 classics stay in a second-page menu. `docs/GAMES.md`.
+* **Added in 1.0**: the lock moved into the kernel (it covers apps and games, and every wake-up path), a wait after wrong PINs, a stricter exam mode; whole Reversi games checked against a Python reference, all 8 Sokoban levels solved in the emulator, the settings journal tested at start-up / RAM wipe / full-sector rollover, notes tested at full length. **Bugs found and fixed on the way**: the text editor overwrote the notepad's slot number (notes 2-4 were saved into the wrong slot); a flaky coverage threshold in the ESP32 jobs host test. Still **not tested on the unit**.
 * **Added in 0.6**: PIN lock + exam mode, notepad, live contrast shortcut, persistent scores (fixing an old bug that stored `id*2` instead of the score), journal records 64 B (the first boot of this version starts from default settings), Invaders skips redraws when nothing moved (CPU idle 61 % -> 86 %). All of it is emulator-only: **not tested on the unit**. Comparison with other custom OSes: `docs/FEATURES.md`.
 * **Tools that catch what the emulator cannot**: crash trail (`REINICIO PC= SP=` after an unexpected restart), DIAGNOSTICS `7 TIMING`, `tools/check_labels.py`, `tools/audit_text.py`, `tools/z80dis.py` (disassembler + boot tracer), the bring-up build with a progress bar and contrast sweep.
 * A GitHub-ready repository: MIT license, `docs/INSTALL.md`, `docs/GAMES.md`, `CONTRIBUTING.md`, issue template for hardware reports.
@@ -20,7 +21,7 @@ Everything after the boot screen (keyboard fix, games, diagnostics, calculator, 
 
 | Check | Count | How to run |
 |---|---|---|
-| Emulator self-test (TI-83 Plus SE core + virtual ESP32) | **191 checks** (UI, link, OTA, calculator, CAS client, games, lock / notes, no-ESP32 behaviour, fault injection, 46 for the native games and 13 for lock / notes / contrast) | `python tools\selftest.py` (`--m3` = only the milestone 3 UI part, `python tools\selftest_m4.py` = only milestone 4, `python tools\selftest_noesp.py` = only the no-ESP32 part) |
+| Emulator self-test (TI-83 Plus SE core + virtual ESP32) | **221 checks** (UI, link, OTA, calculator, CAS client, games, lock / notes / journal, whole Reversi games against a Python reference, all Sokoban levels solved, no-ESP32 behaviour, fault injection) | `python tools\selftest.py` (`--m3` = only the milestone 3 UI part, `python tools\selftest_m4.py` = only milestone 4, `python tools\selftest_noesp.py` = only the no-ESP32 part) |
 | Signed `.8xu`: structure, pages, checksums, untouched factory pages, **RSA signature math (key 04)**, boot entry bytes | 22 checks | `python tools\verify_8xu.py` (also run by `2_build_all.ps1`) |
 | Z80 floating point library vs Python | **324 cases** | `python tools\mathtest.py` |
 | Super-CAS (same C++ as the firmware, host build) | **212 checks** | `python cas\cas_tests.py` |

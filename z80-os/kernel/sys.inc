@@ -60,3 +60,5 @@ viewer         .equ $0196
 S_CALL_PAGEX .equ $0199
 call_pagex     .equ $0199
 S_LINK_DIRECT .equ $019C
+S_LOCK_PIN_READ .equ $019F
+S_LOCK_UNLOCK .equ $01A2

@@ -18,5 +18,9 @@ jobs:
         run: python tools/audit_text.py
       - name: no duplicated assembler names
         run: python tools/check_labels.py
+      - name: Sokoban levels are well formed, fit 16x9 and are solvable
+        run: python tools/check_sokoban_levels.py
+      - name: Reversi reference rules sanity
+        run: python -c "import sys; sys.path.insert(0, 'tools'); import reversi_ref as R; b = R.start(); assert sorted(R.moves(b, 1)) == [(2, 3), (3, 2), (4, 5), (5, 4)]; assert len(R.cpu_outcomes(R.play(b, 3, 2, 1))) >= 1; print('ok')"
       - name: python sources compile
         run: python -m compileall -q tools bridge_pc cas games

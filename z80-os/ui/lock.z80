@@ -1,122 +1,13 @@
 ; =============================================================================
-; Screen lock and exam mode.
-;   s_lock 0 = off, 1 = PIN after every sleep and at boot, 2 = exam mode (PIN, and the launcher refuses the items flagged $80:
-;   games, AI and every network app).  s_pin = four BCD digits, kept in the settings (flash journal), so it survives battery changes.
-;   There is no back door: a forgotten PIN means reinstalling the OS (docs/INSTALL.md).
+; Lock settings app.  The PIN screen itself (lock_pin_read / lock_unlock) lives in the kernel (kernel/lock.z80) so it also works when the
+; calculator wakes up inside an app or a game.
+;   s_lock 0 = off, 1 = PIN after every sleep and at boot, 2 = exam mode: the launcher refuses the items flagged $80 (games, AI, network,
+;   reference tools, notes, settings, diagnostics).  No back door inside the OS: a forgotten PIN is cleared by flashing a different build (kernel/lock.z80, lock_build_check).
 ; =============================================================================
-pin_keys:   .db K_0,K_1,K_2,K_3,K_4,K_5,K_6,K_7,K_8,K_9
-
-ui_pin_read:                    ; HL = title STR id -> HL = the four digits (BCD), CF = cancelled with CLEAR
-    push hl
-    xor a
-    ld (v_ui0),a                ; digits typed so far
-    ld (v_ui2),a
-    ld (v_ui3),a                ; the value (16-bit at v_ui2)
-upr_draw:
-    pop hl
-    push hl
-    call ui_begin_id
-    ld hl,NUMBUF                ; "* * _ _"
-    ld b,0
-upr_m:
-    ld a,(v_ui0)
-    cp b
-    ld a,'_'
-    jr c,upr_ch
-    jr z,upr_ch
-    ld a,'*'
-upr_ch:
-    ld (hl),a
-    inc hl
-    inc b
-    ld a,b
-    cp 4
-    jr z,upr_end
-    ld (hl),' '
-    inc hl
-    jr upr_m
-upr_end:
-    ld (hl),0
-    ld hl,NUMBUF
-    ld b,8
-    ld c,26
-    call S_PUTS
-    call ui_wait_any
-    cp K_CLEAR
-    jr z,upr_cancel
-    cp K_DEL
-    jr z,upr_del
-    ld hl,pin_keys
-    ld b,0
-upr_k:
-    cp (hl)
-    jr z,upr_dig
-    inc hl
-    inc b
-    ld c,a
-    ld a,b
-    cp 10
-    ld a,c
-    jr c,upr_k
-    jr upr_draw                 ; not a digit
-upr_dig:
-    ld hl,(v_ui2)
-    add hl,hl
-    add hl,hl
-    add hl,hl
-    add hl,hl
-    ld a,l
-    or b
-    ld l,a
-    ld (v_ui2),hl
-    ld a,(v_ui0)
-    inc a
-    ld (v_ui0),a
-    cp 4
-    jr nz,upr_draw
-    pop de
-    ld hl,(v_ui2)
-    or a
-    ret
-upr_del:
-    ld a,(v_ui0)
-    or a
-    jr z,upr_draw
-    dec a
-    ld (v_ui0),a
-    ld hl,(v_ui2)
-    srl h
-    rr l
-    srl h
-    rr l
-    srl h
-    rr l
-    srl h
-    rr l
-    ld (v_ui2),hl
-    jp upr_draw
-upr_cancel:
-    pop hl
-    scf
-    ret
-
-ui_unlock:                      ; the PIN screen: only the right PIN gets out of it
-    ld hl,STR_PIN_ENTER
-    call ui_pin_read
-    jr c,ui_unlock
-    ex de,hl
-    ld hl,(s_pin)
-    or a
-    sbc hl,de
-    ret z
-    ld hl,STR_PIN_BAD
-    call ui_message
-    jr ui_unlock
-
 app_lock:
     ld a,(s_lock)
     or a
-    call nz,ui_unlock           ; changing the lock needs the PIN
+    call nz,S_LOCK_UNLOCK       ; changing the lock needs the PIN
 lk_menu:
     ld hl,STR_APP_LOCK
     call ui_begin_id
@@ -153,7 +44,7 @@ lk_menu:
 lk_line:                        ; HL = STR id, C = y
     call tr
     ld b,0
-    jp S_PUTS
+    jp S_PUTS_SMALL
 lk_pin:
     ld a,1
     jr lk_set
@@ -162,11 +53,13 @@ lk_exam:
 lk_set:
     ld (v_ui1),a
     ld hl,STR_PIN_NEW
-    call ui_pin_read
+    call tr
+    call S_LOCK_PIN_READ
     ret c
     push hl
     ld hl,STR_PIN_AGAIN
-    call ui_pin_read
+    call tr
+    call S_LOCK_PIN_READ
     pop de
     ret c
     or a
@@ -179,8 +72,6 @@ lk_same:
     ld (s_pin),de
     ld a,(v_ui1)
     ld (s_lock),a
-    ld hl,v_flags
-    res F_LOCKREQ,(hl)          ; (a wake-up from before the lock existed must not ask for the PIN right away)
     call S_SETTINGS_SAVE
     ld hl,STR_O_DONE
     jp ui_message
@@ -193,5 +84,5 @@ lk_now:
     ld a,(s_lock)
     or a
     jp z,lk_menu
-    call ui_unlock
+    call S_LOCK_UNLOCK
     jp lk_menu

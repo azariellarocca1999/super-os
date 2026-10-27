@@ -554,6 +554,10 @@ def main():
         selftest_games.run(check)
         import selftest_lock
         selftest_lock.run(check)
+        import selftest_reversi
+        selftest_reversi.run(check)
+        import selftest_sokoban
+        selftest_sokoban.run(check)
         import selftest_review
         selftest_review.run(check)
     print()

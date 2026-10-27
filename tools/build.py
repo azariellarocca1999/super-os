@@ -27,10 +27,27 @@ def asm(src, dst):
     return out
 
 
+def write_build_id():
+    """build/buildid.inc: BUILD_ID = CRC-16 of every OS source file + the build switches.  The kernel stores it in the settings; when a different build
+    boots for the first time the lock (and its PIN) is cleared, so reinstalling the OS (e.g. the other .8xu of a release) is the way out of a forgotten PIN."""
+    import zlib
+    crc = 0
+    for base in ("z80-os",):
+        for dirpath, _dirs, files in sorted(os.walk(base)):
+            for f in sorted(files):
+                if f.endswith((".z80", ".inc", ".asm")):
+                    crc = zlib.crc32(open(os.path.join(dirpath, f), "rb").read(), crc)
+    for f in ("autogame.inc", "bringup.inc"):
+        crc = zlib.crc32(open(os.path.join("build", f), "rb").read(), crc)
+    ident = (crc & 0xFFFF) or 1
+    open(os.path.join("build", "buildid.inc"), "w").write("BUILD_ID .equ $%04X\n" % ident)
+
+
 def main():
     for name, default in (("autogame.inc", "#define AUTOGAME 0\n"), ("bringup.inc", "#define BRINGUP_SWEEP 0\n")):    # build switches: see build_bringup.py / tests
         if not os.path.exists(os.path.join("build", name)):
             open(os.path.join("build", name), "w").write(default)
+    write_build_id()
     run([sys.executable, "tools/check_labels.py"])        # duplicated names are silent in spasm and send jumps to the wrong place
     run([sys.executable, "tools/gen_sys.py"])
     run([sys.executable, "tools/gen_strings.py"]) if os.path.exists("tools/gen_strings.py") else None

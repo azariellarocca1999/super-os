@@ -21,7 +21,7 @@ Researched on 2026-10-26 from the public descriptions of **KnightOS** and the **
 
 ## Added after the comparison
 
-PIN lock + exam mode, a four-note notepad, persistent best scores, a live contrast shortcut, Sokoban and Reversi.
+PIN lock + exam mode (in the kernel, so it covers apps and games), a four-note notepad, persistent best scores, a live contrast shortcut, Sokoban and Reversi.
 
 ## Looked at and not done (and why)
 

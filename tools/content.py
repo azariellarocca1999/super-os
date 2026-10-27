@@ -38,7 +38,7 @@ Texts and pictures are stored compressed with ZX0 and unpacked straight
 into RAM in a few milliseconds. UP/DOWN scroll, CLEAR goes back.
 """.encode("ascii")
 
-ABOUT = b"Super-OS 0.1\nZ80 15MHz TI-83 Plus SE\n"
+ABOUT = b"Super-OS 1.0\nZ80 15MHz TI-83 Plus SE\n"
 
 
 def demo():

@@ -79,6 +79,8 @@ reset:
     jp viewer                   ; $0196  TEXTBUF text viewer
     jp call_pagex               ; $0199  A=page IX=routine (HL, DE, BC preserved)
     jp link_direct              ; $019C  like link_request but runs the exchange in the caller (streaming loops)
+    jp lock_pin_read            ; $019F  HL=title string -> HL=PIN (BCD), CF=cancelled
+    jp lock_unlock              ; $01A2  the PIN screen (returns when the right PIN is typed)
 
 .fill $0200-$,$FF
 ; -----------------------------------------------------------------------------
@@ -149,6 +151,7 @@ boot_nocrash:
     ld ix,$+7
     jp crumb_ns
     call settings_load
+    call lock_build_check
     ld a,4                      ; stage 4: settings loaded
     ld ix,$+7
     jp crumb_ns
@@ -847,6 +850,7 @@ call_page_jp:
     jp (hl)
 
 ram_page:                       ; A = RAM page 0..7 mapped at $C000
+    ld (v_rampg),a
     out (P_RAMPAGE),a
     ret
 
@@ -854,6 +858,7 @@ ram_page:                       ; A = RAM page 0..7 mapped at $C000
 #include "drivers/gfx.z80"
 #include "kernel/storage.z80"
 #include "kernel/uilib.z80"
+#include "kernel/lock.z80"
 #include "kernel/edit.z80"
 #include "kernel/viewer.z80"
 #include "kernel/pkg.z80"

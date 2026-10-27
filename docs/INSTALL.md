@@ -41,6 +41,10 @@ If the OS restarts by itself it shows `REINICIO` with the program counter and st
 
 Super-OS cannot receive an OS over the cable (it does not implement TI's link protocol), so recovery always goes through the boot code's receive mode: **remove one AAA battery, hold DEL, put it back**, wait for `Waiting... Please install operating system now`, send the official OS. This works because the boot page is never written. If it does not show the message: stop, do not try other key combinations, keep the unit powered off and ask for help with a description of what you see.
 
+## If you set a PIN and forget it
+
+The lock (F5, `8`) has no back door inside the OS: it keeps passers-by out, it is not cryptography. The way out is a **reinstall of a different build**: the OS stamps the build it is (a checksum of its sources) into the saved settings, and the first time a build that has not run before starts, it clears the lock and the PIN. So flash the *other* file of the release (`SuperOS_bringup.8xu` if you had `SuperOS.8xu`, or the reverse; any newer release works too), with the same steps as above. Flashing the very same file again does **not** clear it. Everything else (settings, scores) survives. Try the lock once before relying on it.
+
 ## Reporting a problem
 
 Open an issue with: the step, the **exact text** on the screen (or a photo), when it happened, your model, boot code and OS version before the install, the cable and software you used. Real-hardware reports are the most valuable contribution this project can get.
